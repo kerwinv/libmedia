@@ -160,10 +160,10 @@ type SelfTask = VideoRenderTaskOptions & {
   playingFromHistory: boolean
 }
 
-const HHRPrimaries = ['bt2020', 'bt2100', 'st2048', 'p3-dcl', 'hlg']
+const HDRPrimaries = ['bt2020', 'bt2100', 'st2048', 'p3-dcl', 'hlg']
 
 function isHDR(primaries: string) {
-  return array.has(HHRPrimaries, primaries)
+  return array.has(HDRPrimaries, primaries)
 }
 
 /**
