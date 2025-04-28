@@ -389,6 +389,7 @@
       <button onclick="enterFullscreen()">全屏</button>
       <button onclick="resume()">resume</button>
       <button onclick="nextFrame()">下一帧</button>
+      <button onclick="prevFrame()">上一帧</button>
     </div>
 
     <br/>
@@ -1180,6 +1181,12 @@
       function nextFrame() {
         if (player) {
           player.playNextFrame()
+        }
+      }
+
+      function prevFrame() {
+        if (player) {
+          player.playPrevFrame()
         }
       }
 

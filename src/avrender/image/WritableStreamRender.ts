@@ -50,6 +50,7 @@ export default class WritableStreamRender extends ImageRender {
 
   public render(frame: VideoFrame | pointer<AVFrame>): void {
     if (frame instanceof VideoFrame) {
+      // @ts-ignore
       frame = new VideoFrame(frame, {
         timestamp: getTimestamp(),
         // 垂直翻转等价于 旋转 180 度 + 水平翻转
@@ -59,6 +60,7 @@ export default class WritableStreamRender extends ImageRender {
     }
     else {
       frame = avframe2VideoFrame(frame, static_cast<int64>(getTimestamp() as uint32), {
+        // @ts-ignore
         rotation: (this.rotate + (this.flipVertical ? 180 : 0)) % 360,
         flip: (this.flipHorizontal || this.flipVertical) && !(this.flipHorizontal && this.flipVertical),
       })

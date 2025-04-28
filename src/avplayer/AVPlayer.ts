@@ -3322,6 +3322,12 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     }
   }
 
+  public async playPrevFrame() {
+    if (!this.useMSE && this.status === AVPlayerStatus.PAUSED && this.selectedVideoStream) {
+      await this.VideoRenderThread.renderPrevFrame(this.taskId)
+    }
+  }
+
   /**
    * 全屏
    */

@@ -29,7 +29,7 @@ import { Mutex } from 'cheap/thread/mutex'
 import * as atomics from 'cheap/thread/atomics'
 import * as mutex from 'cheap/thread/mutex'
 import { avMallocz } from '../util/mem'
-import { getAVFrameDefault, unrefAVFrame } from '../util/avframe'
+import { getAVFrameDefault, refAVFrame, unrefAVFrame } from '../util/avframe'
 
 export default class AVFramePoolImpl implements AVFramePool {
 
@@ -75,5 +75,13 @@ export default class AVFramePoolImpl implements AVFramePool {
       unrefAVFrame(avframe)
       atomics.store(addressof(avframe.refCount), -1)
     }
+  }
+  public clone(dst: pointer<AVFrameRef>, src: pointer<AVFrameRef>): void {
+    if (dst === nullptr || src === nullptr) {
+      return
+    };
+
+    // 使用 avutil 的 refAVFrame 或 cloneAVFrame
+    refAVFrame(dst, src)
   }
 }
