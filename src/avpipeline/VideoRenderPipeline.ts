@@ -1503,6 +1503,8 @@ export default class VideoRenderPipeline extends Pipeline {
       // 清理历史帧
       if (task.historyFrames) {
         task.historyFrames.clear()
+        task.inFrameNavigation = false
+        task.playingFromHistory = false
       }
 
       const started = !!task.loop
