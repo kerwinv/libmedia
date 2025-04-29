@@ -246,7 +246,6 @@ class CircularFrameBuffer {
   public prev(): pointer<AVFrameRef> | VideoFrame | null {
     if (this.currentIndex > 0) {
       this.currentIndex--
-      console.log('获取上一帧', this.currentIndex, this.frames.length)
       return this.cloneFrame(this.frames[this.currentIndex])
     }
     return null
@@ -258,7 +257,6 @@ class CircularFrameBuffer {
   public next(): pointer<AVFrameRef> | VideoFrame | null {
     if (this.currentIndex < this.frames.length - 1) {
       this.currentIndex++
-      console.log('获取下一帧', this.currentIndex, this.frames.length)
       return this.cloneFrame(this.frames[this.currentIndex])
     }
     return null
@@ -375,7 +373,7 @@ export default class VideoRenderPipeline extends Pipeline {
       inFrameNavigation: false,
       playingFromHistory: false
     }
-    task.historyFrames = new CircularFrameBuffer(10, task.avframePool)
+    task.historyFrames = new CircularFrameBuffer(100, task.avframePool)
 
     controlIPCPort.on(NOTIFY, async (request: RpcMessage) => {
       switch (request.method) {
@@ -419,7 +417,6 @@ export default class VideoRenderPipeline extends Pipeline {
 
     // 在播放过程中捕获帧 ( 不在帧导航模式下）
     if (task.backFrame && !task.seeking && !task.inFrameNavigation && task.historyFrames) {
-      console.log('捕获帧到历史缓冲区')
       task.historyFrames.push(task.backFrame)
     }
 
@@ -699,7 +696,6 @@ export default class VideoRenderPipeline extends Pipeline {
           // 获取下一个历史帧
           const nextFrame = task.historyFrames.next()
           if (nextFrame) {
-            console.log('获取历史帧', task.historyFrames.position(), task.historyFrames.size())
             // 释放当前帧 ( 注意，这里可能需要按照你的内存管理策略调整）
             if (task.backFrame) {
               if (isPointer(task.backFrame)) {
@@ -1451,7 +1447,6 @@ export default class VideoRenderPipeline extends Pipeline {
           // 渲染帧
           task.render.render(task.backFrame)
 
-          console.log('渲染下一帧', task.backFrame)
           // 更新状态
           task.stats.videoCurrentTime = pts
           task.stats.videoFrameRenderCount++

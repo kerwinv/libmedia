@@ -207,6 +207,10 @@ export interface AVPlayerOptions {
    * 默认 桌面端 10 移动端 20
    */
   audioWorkletBufferLength?: int32
+  /**
+   * 是否使用 wasm decoder
+   */
+  enableWasmDecoder?: boolean
 }
 
 export interface AVPlayerLoadOptions {
@@ -314,7 +318,8 @@ const defaultAVPlayerOptions: Partial<AVPlayerOptions> = {
   jitterBufferMax: 4,
   jitterBufferMin: 1,
   lowLatency: false,
-  preLoadTime: 4
+  preLoadTime: 4,
+  enableWasmDecoder: true,
 }
 
 export const enum AVPlayerStatus {
@@ -917,6 +922,10 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
 
   private async getResource(type: 'decoder' | 'resampler' | 'stretchpitcher', codecId?: AVCodecID, mediaType?: AVMediaType) {
     const key = codecId != null ? `${type}-${codecId}` : type
+
+    if (type === 'decoder' && !this.options.enableWasmDecoder) {
+      return null
+    }
 
     if (AVPlayer.Resource.has(key)) {
       return AVPlayer.Resource.get(key)
