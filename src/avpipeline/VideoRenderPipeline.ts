@@ -106,6 +106,7 @@ export interface VideoRenderTaskOptions extends TaskOptions {
   avframeListMutex: pointer<Mutex>
   enableJitterBuffer: boolean
   isLive: boolean
+  maxHistoryFrames?: number
 }
 
 type SelfTask = VideoRenderTaskOptions & {
@@ -373,7 +374,7 @@ export default class VideoRenderPipeline extends Pipeline {
       inFrameNavigation: false,
       playingFromHistory: false
     }
-    task.historyFrames = new CircularFrameBuffer(100, task.avframePool)
+    task.historyFrames = new CircularFrameBuffer(options.maxHistoryFrames || 100, task.avframePool)
 
     controlIPCPort.on(NOTIFY, async (request: RpcMessage) => {
       switch (request.method) {
@@ -1462,7 +1463,6 @@ export default class VideoRenderPipeline extends Pipeline {
         }
       }
 
-
       if (task.backFrame) {
         const pts = isPointer(task.backFrame)
           ? avRescaleQ2(
@@ -1481,8 +1481,10 @@ export default class VideoRenderPipeline extends Pipeline {
         task.currentPTS = pts
         task.lastMasterPts = pts
         this.swap(task)
+        return true
       }
     }
+    return false
   }
 
   public async registerTask(options: VideoRenderTaskOptions): Promise<number> {

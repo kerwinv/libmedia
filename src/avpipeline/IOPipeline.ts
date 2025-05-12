@@ -69,15 +69,16 @@ export default class IOPipeline extends Pipeline {
       case IOType.File:
         ioLoader = new FileIOLoader(options.options)
         break
-      case IOType.WEBSOCKET:
-        ioLoader = new WebSocketIOLoader(options.options)
-        break
-      case IOType.WEBTRANSPORT:
-        ioLoader = new WebTransportIOLoader(options.options)
-        break
+      // case IOType.WEBSOCKET:
+      //   ioLoader = new WebSocketIOLoader(options.options)
+      //   break
+      // case IOType.WEBTRANSPORT:
+      //   ioLoader = new WebTransportIOLoader(options.options)
+      //   break
       case IOType.HLS:
         if (defined(ENABLE_PROTOCOL_HLS)) {
-          ioLoader = new (await import('avnetwork/ioLoader/HlsIOLoader')).default(options.options)
+          // ioLoader = new (await import('avnetwork/ioLoader/HlsIOLoader')).default(options.options)
+          ioLoader = new HlsIOLoader(options.options)
         }
         else {
           logger.error('hls protocol not support, maybe you can rebuild avmedia')
@@ -86,22 +87,23 @@ export default class IOPipeline extends Pipeline {
         break
       case IOType.DASH:
         if (defined(ENABLE_PROTOCOL_DASH)) {
-          ioLoader = new (await import('avnetwork/ioLoader/DashIOLoader')).default(options.options)
+          // ioLoader = new (await import('avnetwork/ioLoader/DashIOLoader')).default(options.options)
+          ioLoader = new DashIOLoader(options.options)
         }
         else {
           logger.error('dash protocol not support, maybe you can rebuild avmedia')
           return errorType.FORMAT_NOT_SUPPORT
         }
         break
-      case IOType.RTMP:
-        if (defined(ENABLE_PROTOCOL_RTMP)) {
-          ioLoader = new (await import('avnetwork/ioLoader/RtmpIOLoader')).default(options.options)
-        }
-        else {
-          logger.error('rtmp protocol not support, maybe you can rebuild avmedia')
-          return errorType.FORMAT_NOT_SUPPORT
-        }
-        break
+      // case IOType.RTMP:
+      //   if (defined(ENABLE_PROTOCOL_RTMP)) {
+      //     ioLoader = new (await import('avnetwork/ioLoader/RtmpIOLoader')).default(options.options)
+      //   }
+      //   else {
+      //     logger.error('rtmp protocol not support, maybe you can rebuild avmedia')
+      //     return errorType.FORMAT_NOT_SUPPORT
+      //   }
+      //   break
     }
 
     if (!ioLoader) {

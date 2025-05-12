@@ -701,6 +701,7 @@
             jitterBufferMin: 1,
             // lowLatency: true,
             enableWasmDecoder: false,
+            autoPausedCaseEnded: true
             // audioWorkletBufferLength: 40
           })
           if (mediaStreamModeComponent.mediaStreamMode) {
@@ -793,9 +794,10 @@
 
         player.load(document.querySelector('#file').files[0] ? document.querySelector('#file').files[0] : urlComponent.url, {
           isLive: isLiveComponent.isLive,
-          formatOptions: {
-            fastOpen: true
-          }
+          showFirstFrameOnLoad: true,
+          // formatOptions: {
+            // fastOpen: true
+          // }
         }).then(() => {
           
           if (slider) {

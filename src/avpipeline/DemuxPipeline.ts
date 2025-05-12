@@ -65,10 +65,14 @@ import * as vvc from 'avutil/codecs/vvc'
 import { IRtspFormatOptions } from 'avformat/formats/IRtspFormat'
 import { IFlvFormatOptions } from 'avformat/formats/IFlvFormat'
 import { MovFormatOptions } from 'avformat/formats/mov/type'
-import { IH264FormatOptions } from 'avformat/formats/IH264Format'
-import { IHevcFormatOptions } from 'avformat/formats/IHevcFormat'
-import { IVvcFormatOptions } from 'avformat/formats/IVvcFormat'
+import IH264Format, { IH264FormatOptions } from 'avformat/formats/IH264Format'
+import IHevcFormat, { IHevcFormatOptions } from 'avformat/formats/IHevcFormat'
+import IVvcFormat, { IVvcFormatOptions } from 'avformat/formats/IVvcFormat'
 import support from 'common/util/support'
+import IMovFormat from 'avformat/formats/IMovFormat'
+import IMpegpsFormat from 'avformat/formats/IMpegpsFormat'
+import IMpegtsFormat from 'avformat/formats/IMpegtsFormat'
+import IMatroskaFormat from 'avformat/formats/IMatroskaFormat'
 
 export const STREAM_INDEX_ALL = -1
 
@@ -313,18 +317,19 @@ export default class DemuxPipeline extends Pipeline {
       let iformat: IFormat
 
       switch (format) {
-        case AVFormat.FLV:
-          if (defined(ENABLE_DEMUXER_FLV)) {
-            iformat = new ((await import('avformat/formats/IFlvFormat')).default)(task.formatOptions as IFlvFormatOptions)
-          }
-          else {
-            logger.error('flv format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
+        // case AVFormat.FLV:
+        //   if (defined(ENABLE_DEMUXER_FLV)) {
+        //     iformat = new ((await import('avformat/formats/IFlvFormat')).default)(task.formatOptions as IFlvFormatOptions)
+        //   }
+        //   else {
+        //     logger.error('flv format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
         case AVFormat.MP4:
           if (defined(ENABLE_DEMUXER_MP4) || defined(ENABLE_PROTOCOL_DASH)) {
-            iformat = new ((await import('avformat/formats/IMovFormat')).default)(task.formatOptions as MovFormatOptions)
+            // iformat = new ((await import('avformat/formats/IMovFormat')).default)(task.formatOptions as MovFormatOptions)
+            iformat = new IMovFormat(task.formatOptions as MovFormatOptions)
           }
           else {
             logger.error('mp4 format not support, maybe you can rebuild avmedia')
@@ -333,7 +338,8 @@ export default class DemuxPipeline extends Pipeline {
           break
         case AVFormat.MPEGTS:
           if (defined(ENABLE_DEMUXER_MPEGPS) || defined(ENABLE_PROTOCOL_HLS)) {
-            iformat = new ((await import('avformat/formats/IMpegtsFormat')).default)
+            // iformat = new ((await import('avformat/formats/IMpegtsFormat')).default)
+            iformat = new IMpegtsFormat()
           }
           else {
             logger.error('mpegts format not support, maybe you can rebuild avmedia')
@@ -342,116 +348,119 @@ export default class DemuxPipeline extends Pipeline {
           break
         case AVFormat.MPEGPS:
           if (defined(ENABLE_DEMUXER_MPEGPS)) {
-            iformat = new ((await import('avformat/formats/IMpegpsFormat')).default)
+            // iformat = new ((await import('avformat/formats/IMpegpsFormat')).default)
+            iformat = new IMpegpsFormat()
           }
           else {
             logger.error('mpegps format not support, maybe you can rebuild avmedia')
             return errorType.FORMAT_NOT_SUPPORT
           }
           break
-        case AVFormat.IVF:
-          if (defined(ENABLE_DEMUXER_IVF)) {
-            iformat = new ((await import('avformat/formats/IIvfFormat')).default)
-          }
-          else {
-            logger.error('ivf format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
-        case AVFormat.OGG:
-          if (defined(ENABLE_DEMUXER_OGG)) {
-            iformat = new ((await import('avformat/formats/IOggFormat')).default)
-          }
-          else {
-            logger.error('oggs format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
-        case AVFormat.MP3:
-          if (defined(ENABLE_DEMUXER_MP3)) {
-            iformat = new ((await import('avformat/formats/IMp3Format')).default)
-          }
-          else {
-            logger.error('mp3 format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
+        // case AVFormat.IVF:
+        //   if (defined(ENABLE_DEMUXER_IVF)) {
+        //     iformat = new ((await import('avformat/formats/IIvfFormat')).default)
+        //   }
+        //   else {
+        //     logger.error('ivf format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
+        // case AVFormat.OGG:
+        //   if (defined(ENABLE_DEMUXER_OGG)) {
+        //     iformat = new ((await import('avformat/formats/IOggFormat')).default)
+        //   }
+        //   else {
+        //     logger.error('oggs format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
+        // case AVFormat.MP3:
+        //   if (defined(ENABLE_DEMUXER_MP3)) {
+        //     iformat = new ((await import('avformat/formats/IMp3Format')).default)
+        //   }
+        //   else {
+        //     logger.error('mp3 format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
         case AVFormat.MATROSKA:
         case AVFormat.WEBM:
           if (defined(ENABLE_DEMUXER_MATROSKA)) {
-            iformat = new (((await import('avformat/formats/IMatroskaFormat')).default))
+            // iformat = new (((await import('avformat/formats/IMatroskaFormat')).default))
+            iformat = new IMatroskaFormat()
           }
           else {
             logger.error('matroska format not support, maybe you can rebuild avmedia')
             return errorType.FORMAT_NOT_SUPPORT
           }
           break
-        case AVFormat.AAC:
-          if (defined(ENABLE_DEMUXER_AAC)) {
-            iformat = new (((await import('avformat/formats/IAacFormat')).default))
-          }
-          else {
-            logger.error('aac format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
-        case AVFormat.FLAC:
-          if (defined(ENABLE_DEMUXER_FLAC)) {
-            iformat = new (((await import('avformat/formats/IFlacFormat')).default))
-          }
-          else {
-            logger.error('flac format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
-        case AVFormat.WAV:
-          if (defined(ENABLE_DEMUXER_WAV)) {
-            iformat = new (((await import('avformat/formats/IWavFormat')).default))
-          }
-          else {
-            logger.error('wav format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
-        case AVFormat.WEBVTT:
-          if (defined(ENABLE_DEMUXER_WEBVTT)) {
-            iformat = new (((await import('avformat/formats/IWebVttFormat')).default))
-          }
-          else {
-            logger.error('webvtt format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
-        case AVFormat.SUBRIP:
-          if (defined(ENABLE_DEMUXER_SUBRIP)) {
-            iformat = new (((await import('avformat/formats/ISubRipFormat')).default))
-          }
-          else {
-            logger.error('subrip format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
-        case AVFormat.ASS:
-          if (defined(ENABLE_DEMUXER_ASS)) {
-            iformat = new (((await import('avformat/formats/IAssFormat')).default))
-          }
-          else {
-            logger.error('ass format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
-        case AVFormat.TTML:
-          if (defined(ENABLE_DEMUXER_TTML)) {
-            iformat = new (((await import('avformat/formats/ITtmlFormat')).default))
-          }
-          else {
-            logger.error('ttml format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
+        // case AVFormat.AAC:
+        //   if (defined(ENABLE_DEMUXER_AAC)) {
+        //     iformat = new (((await import('avformat/formats/IAacFormat')).default))
+        //   }
+        //   else {
+        //     logger.error('aac format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
+        // case AVFormat.FLAC:
+        //   if (defined(ENABLE_DEMUXER_FLAC)) {
+        //     iformat = new (((await import('avformat/formats/IFlacFormat')).default))
+        //   }
+        //   else {
+        //     logger.error('flac format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
+        // case AVFormat.WAV:
+        //   if (defined(ENABLE_DEMUXER_WAV)) {
+        //     iformat = new (((await import('avformat/formats/IWavFormat')).default))
+        //   }
+        //   else {
+        //     logger.error('wav format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
+        // case AVFormat.WEBVTT:
+        //   if (defined(ENABLE_DEMUXER_WEBVTT)) {
+        //     iformat = new (((await import('avformat/formats/IWebVttFormat')).default))
+        //   }
+        //   else {
+        //     logger.error('webvtt format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
+        // case AVFormat.SUBRIP:
+        //   if (defined(ENABLE_DEMUXER_SUBRIP)) {
+        //     iformat = new (((await import('avformat/formats/ISubRipFormat')).default))
+        //   }
+        //   else {
+        //     logger.error('subrip format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
+        // case AVFormat.ASS:
+        //   if (defined(ENABLE_DEMUXER_ASS)) {
+        //     iformat = new (((await import('avformat/formats/IAssFormat')).default))
+        //   }
+        //   else {
+        //     logger.error('ass format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
+        // case AVFormat.TTML:
+        //   if (defined(ENABLE_DEMUXER_TTML)) {
+        //     iformat = new (((await import('avformat/formats/ITtmlFormat')).default))
+        //   }
+        //   else {
+        //     logger.error('ttml format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
         case AVFormat.H264:
           if (defined(ENABLE_DEMUXER_H264)) {
-            iformat = new (((await import('avformat/formats/IH264Format')).default))(task.formatOptions as IH264FormatOptions)
+            // iformat = new (((await import('avformat/formats/IH264Format')).default))(task.formatOptions as IH264FormatOptions)
+            iformat = new IH264Format(task.formatOptions as IH264FormatOptions)
           }
           else {
             logger.error('h264 format not support, maybe you can rebuild avmedia')
@@ -460,7 +469,8 @@ export default class DemuxPipeline extends Pipeline {
           break
         case AVFormat.HEVC:
           if (defined(ENABLE_DEMUXER_HEVC)) {
-            iformat = new (((await import('avformat/formats/IHevcFormat')).default))(task.formatOptions as IHevcFormatOptions)
+            // iformat = new (((await import('avformat/formats/IHevcFormat')).default))(task.formatOptions as IHevcFormatOptions)
+            iformat = new IHevcFormat(task.formatOptions as IHevcFormatOptions)
           }
           else {
             logger.error('hevc format not support, maybe you can rebuild avmedia')
@@ -469,22 +479,23 @@ export default class DemuxPipeline extends Pipeline {
           break
         case AVFormat.VVC:
           if (defined(ENABLE_DEMUXER_VVC)) {
-            iformat = new (((await import('avformat/formats/IVvcFormat')).default))(task.formatOptions as IVvcFormatOptions)
+            // iformat = new (((await import('avformat/formats/IVvcFormat')).default))(task.formatOptions as IVvcFormatOptions)
+            iformat = new IVvcFormat(task.formatOptions as IVvcFormatOptions)
           }
           else {
             logger.error('vvc format not support, maybe you can rebuild avmedia')
             return errorType.FORMAT_NOT_SUPPORT
           }
           break
-        case AVFormat.RTSP:
-          if (defined(ENABLE_PROTOCOL_RTSP)) {
-            iformat = new (((await import('avformat/formats/IRtspFormat')).default))(task.formatOptions as IRtspFormatOptions)
-          }
-          else {
-            logger.error('vvc format not support, maybe you can rebuild avmedia')
-            return errorType.FORMAT_NOT_SUPPORT
-          }
-          break
+        // case AVFormat.RTSP:
+        //   if (defined(ENABLE_PROTOCOL_RTSP)) {
+        //     iformat = new (((await import('avformat/formats/IRtspFormat')).default))(task.formatOptions as IRtspFormatOptions)
+        //   }
+        //   else {
+        //     logger.error('vvc format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
         default:
           logger.error('format not support')
           return errorType.FORMAT_NOT_SUPPORT

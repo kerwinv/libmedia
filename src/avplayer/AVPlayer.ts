@@ -211,6 +211,14 @@ export interface AVPlayerOptions {
    * 是否使用 wasm decoder
    */
   enableWasmDecoder?: boolean
+  /**
+   * 最大历史帧数
+   */
+  maxHistoryFrames?: int32
+  /** 
+  * 播放结束后是否自动暂停，否则自动销毁播放器
+  */
+  autoPausedCaseEnded?: boolean
 }
 
 export interface AVPlayerLoadOptions {
@@ -320,6 +328,7 @@ const defaultAVPlayerOptions: Partial<AVPlayerOptions> = {
   lowLatency: false,
   preLoadTime: 4,
   enableWasmDecoder: true,
+  autoPausedCaseEnded: false
 }
 
 export const enum AVPlayerStatus {
@@ -857,27 +866,27 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
         }
       }
       else {
+        if (!this.options.autoPausedCaseEnded) {
+          if ((this.video || this.audio)?.src) {
+            URL.revokeObjectURL((this.video || this.audio).src)
+          }
 
-        if ((this.video || this.audio)?.src) {
-          URL.revokeObjectURL((this.video || this.audio).src)
+          if (!this.isMediaStreamMode()) {
+            if (this.video) {
+              (this.options.container as HTMLDivElement).removeChild(this.video)
+              this.video = null
+            }
+            if (this.audio) {
+              (this.options.container as HTMLDivElement).removeChild(this.audio)
+              this.audio = null
+            }
+            if (this.canvas) {
+              (this.options.container as HTMLDivElement).removeChild(this.canvas)
+              this.canvas = null
+            }
+          }
+          await this.stop()
         }
-
-        if (!this.isMediaStreamMode()) {
-          if (this.video) {
-            (this.options.container as HTMLDivElement).removeChild(this.video)
-            this.video = null
-          }
-          if (this.audio) {
-            (this.options.container as HTMLDivElement).removeChild(this.audio)
-            this.audio = null
-          }
-          if (this.canvas) {
-            (this.options.container as HTMLDivElement).removeChild(this.canvas)
-            this.canvas = null
-          }
-        }
-
-        await this.stop()
 
         this.fire(eventType.ENDED)
       }
@@ -1905,7 +1914,8 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
             : this.getMinStartPTS(),
           avframeList: addressof(this.GlobalData.avframeList),
           avframeListMutex: addressof(this.GlobalData.avframeListMutex),
-          enableJitterBuffer: !!this.jitterBufferController && !this.audioDecoder2AudioRenderChannel
+          enableJitterBuffer: !!this.jitterBufferController && !this.audioDecoder2AudioRenderChannel,
+          maxHistoryFrames: this.options.maxHistoryFrames || 100,
         })
 
       this.videoEnded = false
@@ -3331,14 +3341,19 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
    */
   public async playNextFrame() {
     if (!this.useMSE && this.status === AVPlayerStatus.PAUSED && this.selectedVideoStream) {
-      await this.VideoRenderThread.renderNextFrame(this.taskId)
+      return await this.VideoRenderThread.renderNextFrame(this.taskId)
     }
+    return false
   }
 
+  /**
+   * 播放视频上一帧，可用于逐帧播放，暂停状态下使用（不支持 mse 模式）, 存在上限
+   */
   public async playPrevFrame() {
     if (!this.useMSE && this.status === AVPlayerStatus.PAUSED && this.selectedVideoStream) {
-      await this.VideoRenderThread.renderPrevFrame(this.taskId)
+      return await this.VideoRenderThread.renderPrevFrame(this.taskId)
     }
+    return false
   }
 
   /**
