@@ -107,6 +107,7 @@ export interface VideoRenderTaskOptions extends TaskOptions {
   enableJitterBuffer: boolean
   isLive: boolean
   maxHistoryFrames?: number
+  keepLastFrame?: boolean
 }
 
 type SelfTask = VideoRenderTaskOptions & {
@@ -775,7 +776,7 @@ export default class VideoRenderPipeline extends Pipeline {
             task.loop.emptyTask()
           }
           else {
-            if (task.render && task.renderRedyed) {
+            if (task.render && task.renderRedyed && !task.keepLastFrame) {
               task.render.clear()
             }
             task.loop.stop()

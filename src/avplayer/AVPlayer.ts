@@ -218,7 +218,11 @@ export interface AVPlayerOptions {
   /** 
   * 播放结束后是否自动暂停，否则自动销毁播放器
   */
-  autoPausedCaseEnded?: boolean
+  autoPausedCaseEnded?: boolean,
+  /**
+   * 播放结束时是否保留最后一帧
+   */
+  keepLastFrame?: boolean
 }
 
 export interface AVPlayerLoadOptions {
@@ -1916,6 +1920,7 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
           avframeListMutex: addressof(this.GlobalData.avframeListMutex),
           enableJitterBuffer: !!this.jitterBufferController && !this.audioDecoder2AudioRenderChannel,
           maxHistoryFrames: this.options.maxHistoryFrames || 100,
+          keepLastFrame: this.options.keepLastFrame || false,
         })
 
       this.videoEnded = false
