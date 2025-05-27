@@ -171,153 +171,270 @@ function isHDR(primaries: string) {
 /**
  * 循环帧缓冲区 - 管理历史帧并提供高效的前后导航
  */
+/**
+ * 循环帧缓冲区 - 管理历史帧并提供高效的前后导航
+ */
 class CircularFrameBuffer {
   private frames: (pointer<AVFrameRef> | VideoFrame)[] = []
+  private frameBuffers: any[] = []
   private capacity: number
   private currentIndex: number = -1
   private framePool: AVFramePoolImpl
   private enableCapture: boolean = true
   private inFrameNavigation: boolean = false
+  private isWindows: boolean = os.windows
 
   constructor(capacity: number, framePool: AVFramePoolImpl) {
-    this.capacity = capacity
-    this.framePool = framePool
+	  this.capacity = capacity
+	  this.framePool = framePool
   }
 
   public setFrameNavigation(enable: boolean): void {
-    this.inFrameNavigation = enable
-    if (enable) {
-      this.currentIndex = this.frames.length - 1
-    }
-    else {
+	  this.inFrameNavigation = enable
+	  if (enable) {
+      this.currentIndex = (this.isWindows ? this.frameBuffers.length : this.frames.length) - 1
+	  }
+	  else {
       this.currentIndex = -1
-    }
+	  }
   }
 
   public getFrameNavigation(): boolean {
-    return this.inFrameNavigation
+	  return this.inFrameNavigation
   }
 
   /**
-   * 设置是否捕获帧
-   */
+	 * 设置是否捕获帧
+	 */
   public setEnableCapture(enable: boolean): void {
-    this.enableCapture = enable
-    if (!enable) {
-      this.clear()
-    }
+	  this.enableCapture = enable
+	  if (!enable) {
+		  this.clear()
+	  }
   }
 
-  /**
-   * 添加一帧到历史缓冲区
-   */
-  public push(frame: pointer<AVFrameRef> | VideoFrame): void {
-    if (!this.enableCapture) {
-      return
-    }
+  async serializeVideoFrame(frame: VideoFrame): Promise<any> {
+	  try {
+      // // 使用 allocationSize 获取精确的缓冲区大小
+      // const allocationSize = frame.allocationSize()
 
-    // 创建帧副本
-    let frameCopy: pointer<AVFrameRef> | VideoFrame
-    if (isPointer(frame)) {
-      frameCopy = this.framePool.alloc()
-      this.framePool.clone(frameCopy, frame)
-    }
-    else {
-      frameCopy = frame.clone()
-    }
-
-    // 管理容量
-    if (this.frames.length >= this.capacity) {
-      // 移除最旧的帧
-      const oldFrame = this.frames.shift()
-      this.releaseFrame(oldFrame)
-      // 调整当前索引
-      if (this.currentIndex > 0) {
-        this.currentIndex--
+      // // 创建缓冲区
+      // const buffer = new Uint8Array(allocationSize)
+      const initOptions = {
+        codedHeight: frame.codedHeight,
+        codedWidth: frame.codedWidth,
+        colorSpace: frame.colorSpace,
+        displayHeight: frame.displayHeight,
+        displayWidth: frame.displayWidth,
+        duration: frame.duration,
+        format: frame.format,
+        timestamp: frame.timestamp,
+        visibleRect: frame.visibleRect,
       }
-    }
 
-    // 添加新帧
-    this.frames.push(frameCopy)
-    this.currentIndex = this.frames.length - 1
+      // const actualLayout = await frame.copyTo(buffer)
+      const imgBitMap = await createImageBitmap(frame)
+
+      return {
+        bitmap: imgBitMap,
+        initOptions: {
+          ...initOptions,
+        // 这里使用实际的 layout
+        // layout: actualLayout,
+        }
+		  }
+	  }
+    catch (error) {
+      logger.warn(`序列化VideoFrame失败: ${error.message}`)
+      return null
+	  }
+  }
+
+  async deserializeVideoFrame(data: any): Promise<VideoFrame | null> {
+	  try {
+      // 创建 VideoFrame
+      return new VideoFrame(data.bitmap, data.initOptions)
+	  }
+    catch (error) {
+      logger.warn(`反序列化VideoFrame失败: ${error.message}`)
+      return null
+	  }
   }
 
   /**
-   * 获取上一帧
-   */
-  public prev(): pointer<AVFrameRef> | VideoFrame | null {
-    if (this.currentIndex > 0) {
-      this.currentIndex--
-      return this.cloneFrame(this.frames[this.currentIndex])
-    }
-    return null
-  }
+	 * 添加一帧到历史缓冲区
+	 */
+  public async push(frame: pointer<AVFrameRef> | VideoFrame) {
+	  if (!this.enableCapture) {
+		  return
+	  }
 
-  /**
-   * 获取下一帧
-   */
-  public next(): pointer<AVFrameRef> | VideoFrame | null {
-    if (this.currentIndex < this.frames.length - 1) {
-      this.currentIndex++
-      return this.cloneFrame(this.frames[this.currentIndex])
-    }
-    return null
-  }
+	  if (this.isWindows && !isPointer(frame)) {
+      // Windows: 存储序列化的 buffer
+      const data = await this.serializeVideoFrame(frame as VideoFrame)
+      if (!data) {
+        return
+      }
 
-  /**
-   * 获取当前帧
-   */
-  public current(): pointer<AVFrameRef> | VideoFrame | null {
-    if (this.currentIndex >= 0 && this.currentIndex < this.frames.length) {
-      return this.cloneFrame(this.frames[this.currentIndex])
-    }
-    return null
-  }
+      // 管理容量
+      if (this.frameBuffers.length >= this.capacity) {
+        // 移除最旧的 buffer
+        const data = this.frameBuffers.shift()
+        if (data) {
+          // 释放序列化的 VideoFrame
+          if (data.bitmap instanceof ImageBitmap) {
+            data.bitmap.close()
+          }
+        }
+        // 调整当前索引
+        if (this.currentIndex > 0) {
+          this.currentIndex--
+        }
+      }
 
-  /**
-   * 清空缓冲区
-   */
-  public clear(): void {
-    this.frames.forEach((frame) => this.releaseFrame(frame))
-    this.frames = []
-    this.currentIndex = -1
-  }
-
-  /**
-   * 获取历史帧数量
-   */
-  public size(): number {
-    return this.frames.length
-  }
-
-  /**
-   * 获取当前位置
-   */
-  public position(): number {
-    return this.currentIndex
-  }
-
-  /**
-   * 释放帧资源
-   */
-  private releaseFrame(frame: pointer<AVFrameRef> | VideoFrame): void {
-    if (isPointer(frame)) {
-      this.framePool.release(frame)
-    }
+      this.frameBuffers.push(data)
+      this.currentIndex = this.frameBuffers.length - 1
+	  }
     else {
-      frame.close()
-    }
+      // Mac 或 AVFrameRef: 直接存储帧的副本
+      const clonedFrame = this.cloneFrame(frame)
+      // 管理容量
+      if (this.frames.length >= this.capacity) {
+        // 移除最旧的帧
+        const oldFrame = this.frames.shift()
+        this.releaseFrame(oldFrame)
+        // 调整当前索引
+        if (this.currentIndex > 0) {
+          this.currentIndex--
+        }
+      }
+
+      this.frames.push(clonedFrame)
+      this.currentIndex = this.frames.length - 1
+	  }
+  }
+
+  /**
+	 * 获取上一帧
+	 */
+  public async prev(): Promise<pointer<AVFrameRef> | VideoFrame | null> {
+	  if (this.currentIndex > 0) {
+      this.currentIndex--
+
+      if (this.isWindows && this.frameBuffers.length > 0) {
+		  // Windows: 从 buffer 反序列化
+		  const data = this.frameBuffers[this.currentIndex]
+		  return await this.deserializeVideoFrame(data)
+      }
+      else if (this.frames.length > 0) {
+		  // Mac: 直接返回帧副本
+		  return this.cloneFrame(this.frames[this.currentIndex])
+      // return this.frames[this.currentIndex]
+      }
+	  }
+	  return null
+  }
+
+  /**
+	 * 获取下一帧
+	 */
+  public async next(): Promise<pointer<AVFrameRef> | VideoFrame | null> {
+	  const maxLength = this.isWindows ? this.frameBuffers.length : this.frames.length
+
+	  if (this.currentIndex < maxLength - 1) {
+      this.currentIndex++
+
+      if (this.isWindows && this.frameBuffers.length > 0) {
+		  // Windows: 从 buffer 反序列化
+		  const data = this.frameBuffers[this.currentIndex]
+		  return await this.deserializeVideoFrame(data)
+      }
+      else if (this.frames.length > 0) {
+		  // Mac: 直接返回帧副本
+        return this.cloneFrame(this.frames[this.currentIndex])
+      // return this.frames[this.currentIndex]
+      }
+	  }
+	  return null
+  }
+
+  /**
+	 * 获取当前帧
+	 */
+  public async current(): Promise<pointer<AVFrameRef> | VideoFrame | null> {
+	  const maxLength = this.isWindows ? this.frameBuffers.length : this.frames.length
+
+	  if (this.currentIndex >= 0 && this.currentIndex < maxLength) {
+      if (this.isWindows && this.frameBuffers.length > 0) {
+		  // Windows: 从 buffer 反序列化
+		  const data = this.frameBuffers[this.currentIndex]
+		  return await this.deserializeVideoFrame(data)
+      }
+      else if (this.frames.length > 0) {
+		  // Mac: 直接返回帧副本
+		  // return this.frames[this.currentIndex]
+        return this.cloneFrame(this.frames[this.currentIndex])
+      }
+	  }
+	  return null
+  }
+
+  /**
+	 * 清空缓冲区
+	 */
+  public clear(): void {
+	  if (this.isWindows) {
+      // Windows: 清空 buffer 数组
+      this.frameBuffers.forEach((data) => {
+        if (data.bitmap instanceof ImageBitmap) {
+          data.bitmap.close()
+        }
+      })
+      this.frameBuffers = []
+	  }
+    else {
+      // Mac: 释放帧资源并清空数组
+      this.frames.forEach((frame) => this.releaseFrame(frame))
+      this.frames = []
+	  }
+	  this.currentIndex = -1
+  }
+
+  /**
+	 * 获取历史帧数量
+	 */
+  public size(): number {
+	  return this.isWindows ? this.frameBuffers.length : this.frames.length
+  }
+
+  /**
+	 * 获取当前位置
+	 */
+  public position(): number {
+	  return this.currentIndex
+  }
+
+  /**
+	 * 释放帧资源
+	 */
+  private releaseFrame(frame: pointer<AVFrameRef> | VideoFrame): void {
+	  if (isPointer(frame)) {
+		  this.framePool.release(frame)
+	  }
+	  else {
+		  frame.close()
+	  }
   }
 
   private cloneFrame(frame: pointer<AVFrameRef> | VideoFrame): pointer<AVFrameRef> | VideoFrame {
-    if (isPointer(frame)) {
+	  if (isPointer(frame)) {
       const clonedFrame = this.framePool.alloc()
       this.framePool.clone(clonedFrame, frame)
       return clonedFrame
-    }
-    else {
-      return frame.clone()
-    }
+	  }
+	  else {
+		  return frame.clone()
+	  }
   }
 }
 
@@ -375,7 +492,7 @@ export default class VideoRenderPipeline extends Pipeline {
       inFrameNavigation: false,
       playingFromHistory: false
     }
-    task.historyFrames = new CircularFrameBuffer(options.maxHistoryFrames || 100, task.avframePool)
+    task.historyFrames = new CircularFrameBuffer(options.maxHistoryFrames || 1, task.avframePool)
 
     controlIPCPort.on(NOTIFY, async (request: RpcMessage) => {
       switch (request.method) {
@@ -692,11 +809,11 @@ export default class VideoRenderPipeline extends Pipeline {
 
       const interval = (inWorker && support.shareArrayBuffer) ? 0 : 10
 
-      task.loop = new LoopTask(() => {
+      task.loop = new LoopTask(async () => {
         // 如果正在从历史帧播放
         if (task.playingFromHistory && task.historyFrames) {
           // 获取下一个历史帧
-          const nextFrame = task.historyFrames.next()
+          const nextFrame = await task.historyFrames.next()
           if (nextFrame) {
             // 释放当前帧 ( 注意，这里可能需要按照你的内存管理策略调整）
             if (task.backFrame) {
@@ -1368,7 +1485,7 @@ export default class VideoRenderPipeline extends Pipeline {
     task.inFrameNavigation = true
 
     // 尝试获取前一帧
-    const prevFrame = task.historyFrames.prev()
+    const prevFrame = await task.historyFrames.prev()
     if (!prevFrame) {
       logger.info(`已经是最早的历史帧，无法向前渲染，taskId: ${task.taskId}`)
       return false
@@ -1418,7 +1535,7 @@ export default class VideoRenderPipeline extends Pipeline {
     if (task) {
       // 如果在暂停状态和帧导航模式下，尝试从历史帧缓存中获取下一帧
       if (task.pausing && task.inFrameNavigation && task.historyFrames) {
-        const nextFrame = task.historyFrames.next()
+        const nextFrame = await task.historyFrames.next()
         if (nextFrame) {
           // 释放当前帧
           if (task.backFrame) {

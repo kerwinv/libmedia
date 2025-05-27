@@ -31,7 +31,8 @@
     "eslint-fix": "./node_modules/.bin/eslint './src/**/*.ts' -c=./eslint/typescript.js --rulesdir=./eslint/rules --ignore-path=./.eslintignore --fix",
     "eslint-check": "./node_modules/.bin/eslint './src/**/*.ts' -c=./eslint/typescript.js --rulesdir=./eslint/rules --ignore-path=./.eslintignore",
     "build-debug": "cross-env NODE_ENV=development node --inspect-brk ./node_modules/webpack/bin/webpack.js --progress --env avplayer=1 release=0",
-    "postinstall": "simple-git-hooks"
+    "postinstall": "simple-git-hooks",
+    "server-https": "serve -p 8443 --cors --ssl-cert ./test/cert.pem --ssl-key ./test/key.pem"
   },
   "simple-git-hooks": {
     "commit-msg": "node scripts/verify-commit.js",
