@@ -513,7 +513,7 @@ function parseSegment(
       if (!Number.isInteger(value.duration) && params.compatibleVersion < 3) {
         params.compatibleVersion = 3
       }
-      if (Math.round(value.duration) > params.targetDuration) {
+      if (Math.round(value.duration) - params.targetDuration > 1) {
         logger.fatal('EXTINF duration, when rounded to the nearest integer, MUST be less than or equal to the target duration')
       }
       segment.duration = value.duration

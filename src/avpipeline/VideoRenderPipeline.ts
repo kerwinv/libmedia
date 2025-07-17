@@ -572,7 +572,7 @@ export default class VideoRenderPipeline extends Pipeline {
     }
     task.frontBuffered = false
 
-    task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull').then((frame) => {
+    return task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull').then((frame) => {
       if (task.afterPullResolver) {
         task.afterPullResolver()
       }
@@ -590,10 +590,9 @@ export default class VideoRenderPipeline extends Pipeline {
         return
       }
       if (!task.backFrame) {
-        this.swap(task)
+        return this.swap(task)
       }
     })
-    return true
   }
 
   private fakeSyncPts(task: SelfTask) {
@@ -1598,7 +1597,7 @@ export default class VideoRenderPipeline extends Pipeline {
         task.stats.videoFrameRenderCount++
         task.currentPTS = pts
         task.lastMasterPts = pts
-        this.swap(task)
+        await this.swap(task)
         return true
       }
     }
