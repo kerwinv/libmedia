@@ -120,8 +120,8 @@
       #canvas-background-2,
       #canvas-background {
         background-color: #000;
-        width: 480px;
-        height: 360px;
+        width: 960px;
+        height: 640px;
         display: inline-block;
         position: relative;
       }
@@ -585,7 +585,7 @@
 
       let statsTimer;
 
-      let url = ''
+      let url = 'https://dev1.bilibili.com/test/hls-source/test.m3u8'
       let defaultVersion = '-atomic'
 
       function onFileOpen(target) {
@@ -703,7 +703,8 @@
             enableWasmDecoder: false,
             autoPausedCaseEnded: true,
             keepLastFrame: false,
-            maxHistoryFrames: 90
+            maxHistoryFrames: 90,
+            // samplingMode: 'gpu'
             // audioWorkletBufferLength: 40
           })
           if (mediaStreamModeComponent.mediaStreamMode) {

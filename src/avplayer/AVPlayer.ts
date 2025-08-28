@@ -223,6 +223,12 @@ export interface AVPlayerOptions {
    * 播放结束时是否保留最后一帧
    */
   keepLastFrame?: boolean
+  /**
+   * 采样方式：
+   * - 'gpu'：一次采样到目标像素（清晰，推荐）
+   * - 'css'：canvas= 视频分辨率，交给浏览器 CSS 等比缩放（与 <video> 一致）
+   */
+  samplingMode?: 'gpu' | 'css'
 }
 
 export interface AVPlayerLoadOptions {
@@ -332,7 +338,8 @@ const defaultAVPlayerOptions: Partial<AVPlayerOptions> = {
   lowLatency: false,
   preLoadTime: 4,
   enableWasmDecoder: true,
-  autoPausedCaseEnded: false
+  autoPausedCaseEnded: false,
+  samplingMode: 'css'
 }
 
 export const enum AVPlayerStatus {
@@ -500,6 +507,7 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
   private subtitleRender: SubtitleRender
 
   private externalSubtitleTasks: ExternalSubtitleTask[]
+  private __lastVideoLayout?: { viewportWidth: number; viewportHeight: number; devicePixelRatio: number }
 
   constructor(options: AVPlayerOptions) {
     super(true)
@@ -697,27 +705,86 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     return false
   }
 
+  /**
+   * 根据 samplingMode 布局 canvas：
+   * - css：canvas 像素 = 视频分辨率（不乘 DPR），CSS 等比缩放到容器内，并通过 top/left 数值居中；DPR=1
+   * - gpu：canvas 像素 = 容器 CSS 尺寸×DPR；CSS 100% 填充容器；DPR=devicePixelRatio
+   * 返回渲染线程所需 viewport 与 devicePixelRatio
+   */
+  private layoutCanvas(
+    canvas: HTMLCanvasElement,
+    vw: number,
+    vh: number,
+    container: HTMLDivElement
+  ): { viewportWidth: number; viewportHeight: number; devicePixelRatio: number } {
+    const boxW = Math.max(1, container.clientWidth)
+    const boxH = Math.max(1, container.clientHeight)
+
+    if (this.options.samplingMode === 'css') {
+      // 计算等比尺寸（FIT=contain, FILL=cover），并通过相对定位数值居中
+      const scale = this.renderMode === RenderMode.FILL
+        ? Math.max(boxW / vw, boxH / vh)
+        : Math.min(boxW / vw, boxH / vh)
+      const cssW = Math.max(1, Math.round(vw * scale))
+      const cssH = Math.max(1, Math.round(vh * scale))
+      const left = Math.round((boxW - cssW) / 2)
+      const top = Math.round((boxH - cssH) / 2)
+
+      // 内部像素 = 视频分辨率，不乘 DPR
+      canvas.width = vw
+      canvas.height = vh
+      canvas.style.cssText = `
+        display: block;
+        position: relative;
+        width: ${cssW}px;
+        height: ${cssH}px;
+        left: ${left}px;
+        top: ${top}px;
+        margin: 0;
+      `
+      return { viewportWidth: vw, viewportHeight: vh, devicePixelRatio: window.devicePixelRatio }
+    }
+    else {
+      // GPU 一次采样：CSS 填满容器，内部像素 = 容器 CSS×DPR
+      const dpr = window.devicePixelRatio
+      const devW = boxW
+      const devH = boxH
+      canvas.width = devW
+      canvas.height = devH
+      canvas.style.cssText = `
+        display: block;
+        position: relative;
+        width: 100%;
+        height: 100%;
+        left: 0;
+        top: 0;
+        margin: 0;
+      `
+      return { viewportWidth: boxW, viewportHeight: boxH, devicePixelRatio: dpr }
+    }
+  }
+
   private createCanvas() {
     const canvas = document.createElement('canvas')
     canvas.id = 'avplayer-canvas-' + generateUUID()
     canvas.className = 'avplayer-canvas'
+    // 初始样式，具体尺寸与定位由 layoutCanvas 覆盖
     canvas.style.cssText = `
+      display: block;
+      position: relative;
       width: 100%;
       height: 100%;
+      margin: 0;
+      left: 0;
+      top: 0;
     `
     canvas.ondragstart = () => false
-
     Object.defineProperty(canvas, 'currentTime', {
       enumerable: true,
       configurable: false,
-      get: () => {
-        return Number(this.currentTime) / 1000
-      },
-      set: (time: number) => {
-        this.seek(static_cast<int64>(Math.floor(time * 1000)))
-      }
+      get: () => Number(this.currentTime) / 1000,
+      set: (time: number) => this.seek(static_cast<int64>(Math.floor(time * 1000)))
     })
-
     return canvas
   }
 
@@ -1872,9 +1939,14 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
       }
       else {
         this.canvas = this.createCanvas()
-        this.canvas.width = (this.options.container as HTMLDivElement).offsetWidth * devicePixelRatio
-        this.canvas.height = (this.options.container as HTMLDivElement).offsetHeight * devicePixelRatio
-        ;(this.options.container as HTMLDivElement).appendChild(this.canvas)
+        const container = this.options.container as HTMLDivElement
+        const vw = videoStream.codecpar.width
+        const vh = videoStream.codecpar.height
+
+        // 使用封装的布局逻辑
+        const layout = this.layoutCanvas(this.canvas, vw, vh, container)
+
+        container.appendChild(this.canvas)
         canvas = (supportOffscreenCanvas()
           && (cheapConfig.USE_THREADS
               && defined(ENABLE_THREADS)
@@ -1884,6 +1956,8 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
         )
           ? this.canvas.transferControlToOffscreen()
           : this.canvas
+
+        this.__lastVideoLayout = layout
       }
 
       // 处理旋转
@@ -1908,9 +1982,15 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
           renderRotate: this.renderRotate,
           flipHorizontal: this.flipHorizontal,
           flipVertical: this.flipVertical,
-          viewportWidth: this.isMediaStreamMode() ? videoStream.codecpar.width : (this.options.container as HTMLDivElement).offsetWidth,
-          viewportHeight: this.isMediaStreamMode() ? videoStream.codecpar.height : (this.options.container as HTMLDivElement).offsetHeight,
-          devicePixelRatio: this.isMediaStreamMode() ? 1 : devicePixelRatio,
+          viewportWidth: this.isMediaStreamMode()
+            ? videoStream.codecpar.width
+            : (this.__lastVideoLayout?.viewportWidth ?? (this.options.container as HTMLDivElement).clientWidth),
+          viewportHeight: this.isMediaStreamMode()
+            ? videoStream.codecpar.height
+            : (this.__lastVideoLayout?.viewportHeight ?? (this.options.container as HTMLDivElement).clientHeight),
+          devicePixelRatio: this.isMediaStreamMode()
+            ? 1
+            : (this.__lastVideoLayout?.devicePixelRatio ?? (window.devicePixelRatio || 1)),
           stats: addressof(this.GlobalData.stats),
           enableWebGPU: this.options.enableWebGPU,
           startPTS: this.isLive_
@@ -2965,15 +3045,39 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
 
   /**
    * 重置渲染视图大小
-   * 
-   * @param width 
-   * @param height 
    */
   public resize(width: number, height: number) {
-    if (!this.useMSE) {
+    if (this.useMSE) {
+      logger.info(`player call resize (mse), width: ${width}, height: ${height}, taskId: ${this.taskId}`)
+      return
+    }
+
+    // css 模式：仅重算 canvas 的 CSS 尺寸与居中位置（不修改容器样式，不通知渲染线程）
+    if (this.options.samplingMode === 'css') {
+      const container = this.isMediaStreamMode() ? null : (this.options.container as HTMLDivElement)
+      const vw = this.selectedVideoStream?.codecpar.width
+      const vh = this.selectedVideoStream?.codecpar.height
+
+      if (container && vw && vh) {
+        // 更新当前显示的 canvas
+        if (this.canvas) {
+          this.__lastVideoLayout = this.layoutCanvas(this.canvas, vw, vh, container)
+        }
+        // 若存在待切换的 updateCanvas 同步其样式，避免切换瞬间跳变
+        if (this.updateCanvas) {
+          this.layoutCanvas(this.updateCanvas, vw, vh, container)
+        }
+      }
+
+      logger.info(`player call resize (css), width: ${width}, height: ${height}, taskId: ${this.taskId}`)
+      return
+    }
+
+    // gpu 模式：通知渲染线程，内部像素 = 容器 CSS×DPR
+    if (!this.isMediaStreamMode()) {
       this.VideoRenderThread?.resize(this.taskId, width, height)
     }
-    logger.info(`player call resize, width: ${width}, height: ${height}, taskId: ${this.taskId}`)
+    logger.info(`player call resize (gpu), width: ${width}, height: ${height}, taskId: ${this.taskId}`)
   }
 
   /**
@@ -3505,8 +3609,12 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
    */
   public onCanvasUpdated(): void {
     this.updateCanvas = this.createCanvas()
-    this.updateCanvas.width = (this.options.container as HTMLDivElement).offsetWidth * devicePixelRatio
-    this.updateCanvas.height = (this.options.container as HTMLDivElement).offsetHeight * devicePixelRatio
+    const container = this.options.container as HTMLDivElement
+    const vw = this.selectedVideoStream?.codecpar.width ?? 0
+    const vh = this.selectedVideoStream?.codecpar.height ?? 0
+    if (vw > 0 && vh > 0) {
+      this.__lastVideoLayout = this.layoutCanvas(this.updateCanvas, vw, vh, container)
+    }
     const canvas = (supportOffscreenCanvas()
         && (cheapConfig.USE_THREADS
             && defined(ENABLE_THREADS)
