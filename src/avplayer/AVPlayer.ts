@@ -731,8 +731,6 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
       const top = Math.round((boxH - cssH) / 2)
 
       // 内部像素 = 视频分辨率，不乘 DPR
-      canvas.width = vw
-      canvas.height = vh
       canvas.style.cssText = `
         display: block;
         position: relative;
@@ -3073,7 +3071,6 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
       return
     }
 
-    // gpu 模式：通知渲染线程，内部像素 = 容器 CSS×DPR
     if (!this.isMediaStreamMode()) {
       this.VideoRenderThread?.resize(this.taskId, width, height)
     }
@@ -3473,18 +3470,27 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
       return
     }
     const element: HTMLElement = this.options.container as HTMLDivElement
+    let fullscreenPromise = null
     if (element.requestFullscreen) {
-      element.requestFullscreen()
+      fullscreenPromise = element.requestFullscreen()
     }
     else if (element.mozRequestFullScreen) {
-      element.mozRequestFullScreen()
+      fullscreenPromise = element.mozRequestFullScreen()
     }
     else if (element.webkitRequestFullscreen) {
-      element.webkitRequestFullscreen()
+      fullscreenPromise = element.webkitRequestFullscreen()
     }
     else if (element.msRequestFullscreen) {
-      element.msRequestFullscreen()
+      fullscreenPromise = element.msRequestFullscreen()
     }
+    fullscreenPromise?.then(() => {
+      if (this.isMediaStreamMode() || this.useMSE || this.options.samplingMode === 'gpu') {
+        return
+      }
+      this.resize(element.clientWidth, element.clientHeight)
+    }).catch((e) => {
+      logger.error(`enterFullscreen failed: ${e}, taskId: ${this.taskId}`)
+    })
     logger.info(`player call enterFullscreen, taskId: ${this.taskId}`)
   }
 
@@ -3492,15 +3498,25 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
    * 退出全屏
    */
   public exitFullscreen() {
+    let exitFullscreenPromise = null
     if (document.exitFullscreen) {
-      document.exitFullscreen()
+      exitFullscreenPromise = document.exitFullscreen()
     }
     else if (document.mozExitFullScreen) {
-      document.mozExitFullScreen()
+      exitFullscreenPromise = document.mozExitFullScreen()
     }
     else if (document.webkitExitFullscreen) {
-      document.webkitExitFullscreen()
+      exitFullscreenPromise = document.webkitExitFullscreen()
     }
+    exitFullscreenPromise?.then(() => {
+      if (this.isMediaStreamMode() || this.useMSE || this.options.samplingMode === 'gpu') {
+        return
+      }
+      const element: HTMLElement = this.options.container as HTMLDivElement
+      this.resize(element.clientWidth, element.clientHeight)
+    }).catch((e) => {
+      logger.error(`exitFullscreen failed: ${e}, taskId: ${this.taskId}`)
+    })
     logger.info(`player call exitFullscreen, taskId: ${this.taskId}`)
   }
 
