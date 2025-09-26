@@ -28,10 +28,9 @@ import browser from 'common/util/browser'
 import getVideoCodec from 'avutil/function/getVideoCodec'
 import AVPacket, { AVPacketFlags } from 'avutil/struct/avpacket'
 import { mapUint8Array } from 'cheap/std/memory'
-import AVCodecParameters from 'avutil/struct/avcodecparameters'
+import AVCodecParameters, { AVCodecParameterFlags } from 'avutil/struct/avcodecparameters'
 import { addAVPacketData, getAVPacketData, getAVPacketSideData } from 'avutil/util/avpacket'
 import { getHardwarePreference } from 'avutil/function/getHardwarePreference'
-import { BitFormat } from 'avutil/codecs/h264'
 import avpacket2EncodedVideoChunk from 'avutil/function/avpacket2EncodedVideoChunk'
 import * as logger from 'common/util/logger'
 import os from 'common/util/os'
@@ -39,11 +38,16 @@ import * as h264 from 'avutil/codecs/h264'
 import * as hevc from 'avutil/codecs/hevc'
 import * as vvc from 'avutil/codecs/vvc'
 import * as errorType from 'avutil/error'
+import * as array from 'common/util/array'
+import { AV_TIME_BASE_Q } from 'avutil/constant'
+import { avRescaleQ2 } from 'avutil/util/rational'
 
 export type WebVideoDecoderOptions = {
   onReceiveVideoFrame: (frame: VideoFrame) => void
-  enableHardwareAcceleration?: boolean
   onError: (error?: Error) => void
+  enableHardwareAcceleration?: boolean
+  optimizeForLatency?: boolean
+  codec?: string
 }
 
 export default class WebVideoDecoder {
@@ -59,6 +63,7 @@ export default class WebVideoDecoder {
 
   private inputQueue: number[]
   private outputQueue: VideoFrame[]
+  private dtsQueue: double[]
 
   private sort: boolean
 
@@ -70,14 +75,22 @@ export default class WebVideoDecoder {
     this.options = options
     this.inputQueue = []
     this.outputQueue = []
+    this.dtsQueue = []
 
     // safari 输出帧在有 B 帧的情况下没有按 pts 排序递增输出，这里需要进行排序输出
-    // 经测试 safari 17.4 以上正常排序输出，这里不需要排序了
-    this.sort = !!(browser.safari && !browser.checkVersion(browser.version, '17.4', true)
-      || os.ios && !browser.checkVersion(os.version, '17.4', true))
+    this.sort = !!(browser.safari || os.ios)
   }
 
   private async output(frame: VideoFrame) {
+    if (this.parameters.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_NO_PTS
+      && this.dtsQueue.length
+    ) {
+      const old = frame
+      frame = new VideoFrame(old, {
+        timestamp: this.dtsQueue.shift()
+      })
+      old.close()
+    }
     if (this.sort) {
       let i = 0
       for (; i < this.outputQueue.length; i++) {
@@ -119,30 +132,51 @@ export default class WebVideoDecoder {
   }
 
   private changeExtraData(buffer: Uint8Array) {
-    if (buffer.length === this.extradata!.length) {
-      let same = true
-      for (let i = 0; i < buffer.length; i++) {
-        if (buffer[i] !== this.extradata![i]) {
-          same = false
-          break
-        }
-      }
-      if (same) {
-        return 0
-      }
+    if (array.same(buffer, this.extradata!)) {
+      return 0
     }
 
     this.currentError = null
 
     this.extradata = buffer.slice()
 
+    // safari 创建 webcodecs 解码器需要准确的分辨率
+    // 这里更新一下 width 和 height
+    if (this.parameters.codecId === AVCodecID.AV_CODEC_ID_H264) {
+      h264.parseAVCodecParameters({
+        codecpar: accessof(this.parameters),
+        sideData: {},
+        metadata: {}
+      }, this.extradata)
+    }
+    else if (this.parameters.codecId === AVCodecID.AV_CODEC_ID_HEVC) {
+      hevc.parseAVCodecParameters({
+        codecpar: accessof(this.parameters),
+        sideData: {},
+        metadata: {}
+      }, this.extradata)
+    }
+
     this.decoder!.reset()
 
-    this.decoder!.configure({
-      codec: getVideoCodec(this.parameters, buffer),
+    const config: VideoDecoderConfig = {
+      codec: this.options.codec ?? getVideoCodec(this.parameters, buffer),
+      codedWidth: this.parameters.width,
+      codedHeight: this.parameters.height,
       description: this.extradata,
       hardwareAcceleration: getHardwarePreference(this.options.enableHardwareAcceleration ?? true)
-    })
+    }
+    if (!config.codedWidth) {
+      delete config.codedWidth
+    }
+    if (!config.codedHeight) {
+      delete config.codedHeight
+    }
+    if (this.options.optimizeForLatency) {
+      config.optimizeForLatency = this.options.optimizeForLatency
+    }
+
+    this.decoder!.configure(config)
 
     if (this.currentError) {
       logger.error(`change extra data error, ${this.currentError}`)
@@ -162,17 +196,26 @@ export default class WebVideoDecoder {
     }
     this.parameters = parameters
 
-    const config = {
-      codec: getVideoCodec(parameters),
+    const config: VideoDecoderConfig = {
+      codec: this.options.codec ?? getVideoCodec(parameters),
       codedWidth: parameters.width,
       codedHeight: parameters.height,
-      description: (parameters.bitFormat !== BitFormat.ANNEXB) ? this.extradata : undefined,
+      description: (parameters.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB) ? undefined : this.extradata,
       hardwareAcceleration: getHardwarePreference(this.options.enableHardwareAcceleration ?? true)
+    }
+    if (this.options.optimizeForLatency) {
+      config.optimizeForLatency = this.options.optimizeForLatency
     }
 
     if (!config.description) {
       // description 不是 arraybuffer 会抛错
       delete config.description
+    }
+    if (!config.codedWidth) {
+      delete config.codedWidth
+    }
+    if (!config.codedHeight) {
+      delete config.codedHeight
     }
 
     try {
@@ -205,12 +248,22 @@ export default class WebVideoDecoder {
     }
 
     this.keyframeRequire = true
-    if (this.parameters.bitFormat === BitFormat.ANNEXB) {
+    if (parameters.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB) {
       this.extradataRequire = true
+    }
+    if (this.parameters.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_NO_PTS) {
+      this.sort = false
+    }
+
+    if (this.outputQueue.length) {
+      this.outputQueue.forEach((frame) => {
+        frame.close()
+      })
     }
 
     this.inputQueue.length = 0
     this.outputQueue.length = 0
+    this.dtsQueue.length = 0
 
     return 0
   }
@@ -237,7 +290,10 @@ export default class WebVideoDecoder {
       if (!key) {
         return 0
       }
-      if (this.parameters.bitFormat === BitFormat.ANNEXB && this.extradata && this.extradataRequire) {
+      if ((this.parameters.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB)
+        && this.extradata
+        && this.extradataRequire
+      ) {
         if (this.parameters.codecId === AVCodecID.AV_CODEC_ID_H264) {
           if (!h264.generateAnnexbExtradata(getAVPacketData(avpacket))) {
             const data = h264.annexbAddExtradata(getAVPacketData(avpacket), this.extradata)
@@ -285,6 +341,9 @@ export default class WebVideoDecoder {
 
     try {
       this.decoder!.decode(videoChunk)
+      if (this.parameters.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_NO_PTS) {
+        this.dtsQueue.push(static_cast<double>(avRescaleQ2(avpacket.dts, addressof(avpacket.timeBase), AV_TIME_BASE_Q)))
+      }
     }
     catch (error) {
       logger.error(`decode error, ${error}`)
@@ -332,7 +391,7 @@ export default class WebVideoDecoder {
     this.decoder = undefined
     this.currentError = null
 
-    if (this.outputQueue?.length) {
+    if (this.outputQueue.length) {
       this.outputQueue.forEach((frame) => {
         frame.close()
       })
@@ -359,7 +418,7 @@ export default class WebVideoDecoder {
       codec: getVideoCodec(parameters),
       codedWidth: parameters.width,
       codedHeight: parameters.height,
-      description: (parameters.bitFormat !== BitFormat.ANNEXB) ? extradata : undefined,
+      description: (parameters.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB) ? undefined : extradata,
       hardwareAcceleration: getHardwarePreference(enableHardwareAcceleration ?? true)
     }
 

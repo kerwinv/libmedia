@@ -52,18 +52,17 @@ export default class WritableStreamRender extends ImageRender {
     if (frame instanceof VideoFrame) {
       // @ts-ignore
       frame = new VideoFrame(frame, {
-        timestamp: getTimestamp(),
+        timestamp: getTimestamp() * 1000,
         // 垂直翻转等价于 旋转 180 度 + 水平翻转
         rotation: (this.rotate + (this.flipVertical ? 180 : 0)) % 360,
         flip: (this.flipHorizontal || this.flipVertical) && !(this.flipHorizontal && this.flipVertical),
       })
     }
     else {
-      frame = avframe2VideoFrame(frame, static_cast<int64>(getTimestamp() as uint32), {
-        // @ts-ignore
+      frame = avframe2VideoFrame(frame, static_cast<int64>((getTimestamp() * 1000) as uint32), {
         rotation: (this.rotate + (this.flipVertical ? 180 : 0)) % 360,
         flip: (this.flipHorizontal || this.flipVertical) && !(this.flipHorizontal && this.flipVertical),
-      })
+      } as any)
     }
     this.writer.write(frame)
   }

@@ -12,6 +12,9 @@ export const CodecId2MimeType = {
   [AVCodecID.AV_CODEC_ID_OPUS]: 'opus',
   [AVCodecID.AV_CODEC_ID_PCM_MULAW]: 'ulaw',
   [AVCodecID.AV_CODEC_ID_PCM_ALAW]: 'alaw',
+  [AVCodecID.AV_CODEC_ID_AC3]: 'ac-3',
+  [AVCodecID.AV_CODEC_ID_EAC3]: 'ec-3',
+  [AVCodecID.AV_CODEC_ID_DTS]: 'dtsc',
 
   [AVCodecID.AV_CODEC_ID_AV1]: 'av01',
   [AVCodecID.AV_CODEC_ID_H264]: 'avc1',
@@ -25,6 +28,7 @@ export const CodecId2MimeType = {
 export const Ext2Format: Record<string, AVFormat> = {
   'flv': AVFormat.FLV,
   'mp4': AVFormat.MOV,
+  'm4s': AVFormat.MOV,
   'mov': AVFormat.MOV,
   'ts': AVFormat.MPEGTS,
   'mts': AVFormat.MPEGTS,
@@ -61,7 +65,8 @@ export const Ext2Format: Record<string, AVFormat> = {
   'mpeg': AVFormat.MPEGPS,
   'mpg': AVFormat.MPEGPS,
   'rtsp': AVFormat.RTSP,
-  'rtmp': AVFormat.RTMP
+  'rtmp': AVFormat.RTMP,
+  'avi': AVFormat.AVI
 }
 
 export const Ext2IOLoader: Record<string, IOType> = {
@@ -73,6 +78,14 @@ export const Ext2IOLoader: Record<string, IOType> = {
 export const VideoCodecString2CodecId = {
   'copy': AVCodecID.AV_CODEC_ID_NONE,
   'h264': AVCodecID.AV_CODEC_ID_H264,
+  'h261': AVCodecID.AV_CODEC_ID_H261,
+  'h263': AVCodecID.AV_CODEC_ID_H263,
+  'h263i': AVCodecID.AV_CODEC_ID_H263I,
+  'h263p': AVCodecID.AV_CODEC_ID_H263P,
+  'mjpeg': AVCodecID.AV_CODEC_ID_MJPEG,
+  'wmv1': AVCodecID.AV_CODEC_ID_WMV1,
+  'wmv2': AVCodecID.AV_CODEC_ID_WMV2,
+  'wmv3': AVCodecID.AV_CODEC_ID_WMV3,
   'avc': AVCodecID.AV_CODEC_ID_H264,
   'hevc': AVCodecID.AV_CODEC_ID_HEVC,
   'h265': AVCodecID.AV_CODEC_ID_HEVC,
@@ -83,7 +96,11 @@ export const VideoCodecString2CodecId = {
   'vp8': AVCodecID.AV_CODEC_ID_VP8,
   'mpeg4': AVCodecID.AV_CODEC_ID_MPEG4,
   'theora': AVCodecID.AV_CODEC_ID_THEORA,
-  'mpeg2video': AVCodecID.AV_CODEC_ID_MPEG2VIDEO
+  'mpeg2video': AVCodecID.AV_CODEC_ID_MPEG2VIDEO,
+  'rv10': AVCodecID.AV_CODEC_ID_RV10,
+  'rv20': AVCodecID.AV_CODEC_ID_RV20,
+  'rv30': AVCodecID.AV_CODEC_ID_RV30,
+  'rv40': AVCodecID.AV_CODEC_ID_RV40
 }
 
 export const AudioCodecString2CodecId = {
@@ -98,7 +115,19 @@ export const AudioCodecString2CodecId = {
   'speex': AVCodecID.AV_CODEC_ID_SPEEX,
   'vorbis': AVCodecID.AV_CODEC_ID_VORBIS,
   'pcm_alaw': AVCodecID.AV_CODEC_ID_PCM_ALAW,
-  'pcm_mulaw': AVCodecID.AV_CODEC_ID_PCM_MULAW
+  'pcm_mulaw': AVCodecID.AV_CODEC_ID_PCM_MULAW,
+  'wmav1': AVCodecID.AV_CODEC_ID_WMAV1,
+  'wmav2': AVCodecID.AV_CODEC_ID_WMAV2,
+  'cook': AVCodecID.AV_CODEC_ID_COOK,
+  'sipr': AVCodecID.AV_CODEC_ID_SIPR,
+  'ralf': AVCodecID.AV_CODEC_ID_RALF,
+  'pcm_u8': AVCodecID.AV_CODEC_ID_PCM_U8,
+  'pcm_s16le': AVCodecID.AV_CODEC_ID_PCM_S16LE,
+  'pcm_s24le': AVCodecID.AV_CODEC_ID_PCM_S24LE,
+  'pcm_s32le': AVCodecID.AV_CODEC_ID_PCM_S32LE,
+  'pcm_s64le': AVCodecID.AV_CODEC_ID_PCM_S64LE,
+  'pcm_f32le': AVCodecID.AV_CODEC_ID_PCM_F32LE,
+  'pcm_f64le': AVCodecID.AV_CODEC_ID_PCM_F64LE
 }
 
 export const SubtitleCodecString2CodecId = {
@@ -180,7 +209,8 @@ export const Format2AVFormat: Record<string, AVFormat> = {
   'raw_h265': AVFormat.HEVC,
   'raw_vvc': AVFormat.VVC,
   'rtsp': AVFormat.RTSP,
-  'rtmp': AVFormat.RTMP
+  'rtmp': AVFormat.RTMP,
+  'avi': AVFormat.AVI
 }
 
 export const colorRange2AVColorRange: Record<string, AVColorRange> = {

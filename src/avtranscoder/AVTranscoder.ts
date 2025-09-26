@@ -61,12 +61,11 @@ import IPCPort, { NOTIFY, REQUEST, RpcMessage } from 'common/network/IPCPort'
 import * as errorType from 'avutil/error'
 import getAudioCodec from 'avutil/function/getAudioCodec'
 import { avFree, avMalloc, avMallocz } from 'avutil/util/mem'
-import AVCodecParameters from 'avutil/struct/avcodecparameters'
+import AVCodecParameters, { AVCodecParameterFlags } from 'avutil/struct/avcodecparameters'
 import { copyCodecParameters, freeCodecParameters } from 'avutil/util/codecparameters'
 import SafeFileIO from 'common/io/SafeFileIO'
 import Emitter from 'common/event/Emitter'
 import * as eventType from './eventType'
-import { BitFormat } from 'avutil/codecs/h264'
 import { unrefAVFrame } from 'avutil/util/avframe'
 import { unrefAVPacket } from 'avutil/util/avpacket'
 
@@ -77,6 +76,7 @@ import * as hevc from 'avutil/codecs/hevc'
 import * as vvc from 'avutil/codecs/vvc'
 import * as av1 from 'avutil/codecs/av1'
 import * as vp9 from 'avutil/codecs/vp9'
+import * as pcm from 'avutil/util/pcm'
 import Sleep from 'common/timer/Sleep'
 import AVFilterPipeline from './filter/AVFilterPipeline'
 import { AVFilterGraphDesVertex, FilterGraphPortDes, GraphNodeType, createGraphDesVertex } from 'avfilter/graph'
@@ -86,7 +86,7 @@ import getTimestamp from 'common/function/getTimestamp'
 import Timer from 'common/timer/Timer'
 import createMessageChannel from './function/createMessageChannel'
 import Controller, { ControllerObserver } from './Controller'
-import { AVFormatContextInterface } from 'avformat/AVFormatContext'
+import { AVChapter, AVFormatContextInterface } from 'avformat/AVFormatContext'
 import dump, { dumpCodecName, dumpTime } from 'avformat/dump'
 import { Data } from 'common/types/type'
 import os from 'common/util/os'
@@ -156,13 +156,36 @@ export interface TaskOptions {
      */
     enableHardware?: boolean
   }
+  /**
+   * 输出的帧在原始文件中的开始时间（毫秒）
+   */
   start?: number
+  /**
+   * 输出的帧在原始文件中的开始时间之后的持续时间（毫秒）
+   */
   duration?: number
+  /**
+   * 指定输出帧的数量
+   */
   nbFrame?: number
+  /**
+   * 使用输入的 pts dts 作为输出
+   */
+  copyTs?: boolean
+  /**
+   * pts dts 强制从 0 开始
+   */
+  startAtZero?: boolean
+  /**
+   * pts dts 强制为非负数
+   */
+  nonnegative?: boolean
   output: {
     file: FileSystemFileHandle | IOWriterSync
     format?: keyof (typeof Format2AVFormat)
     formatOptions?: Data
+    metadata?: Data
+    chapters?: AVChapter[]
     video?: {
       /**
        * 输出编码类型
@@ -279,7 +302,8 @@ interface SelfTask {
   inputIPCPort?: IPCPort
   outputIPCPort?: IPCPort
   safeFileIO?: SafeFileIO
-  format: AVFormat
+  iformat: AVFormat
+  oformat: AVFormat
   formatContext: AVFormatContextInterface
   streams: {
     taskId?: string
@@ -599,7 +623,7 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
     stream.timeBase.num = timeBase.num
   }
 
-  private copyAVStreamInterface(task: SelfTask, stream: AVStreamInterface) {
+  private copyAVStreamInterface(task: SelfTask, stream: AVStreamInterface, copy: boolean = false) {
     const newStream = object.extend({}, stream)
     newStream.codecpar = reinterpret_cast<pointer<AVCodecParameters>>(avMallocz(sizeof(AVCodecParameters)))
     copyCodecParameters(newStream.codecpar, stream.codecpar)
@@ -610,8 +634,26 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
 
     newStream.timeBase.den = stream.timeBase.den
     newStream.timeBase.num = stream.timeBase.num
+    newStream.codecpar.codecTag = 0
+    if (newStream.timeBase.num > 1) {
+      if (newStream.codecpar.codecType === AVMediaType.AVMEDIA_TYPE_AUDIO) {
+        this.changeAVStreamTimebase(newStream, { num: 1, den: newStream.codecpar.sampleRate })
+      }
+      else if (newStream.codecpar.codecType === AVMediaType.AVMEDIA_TYPE_VIDEO) {
+        this.changeAVStreamTimebase(newStream, { num: 1, den: 90000 })
+      }
+    }
+    if (task.oformat === AVFormat.MOV
+      && newStream.codecpar.codecType === AVMediaType.AVMEDIA_TYPE_VIDEO
+    ) {
+      // 如果是整数帧率，调整时间基为 framerate 的倍数，节省 stts box 的大小
+      const framerate = avQ2D(newStream.codecpar.framerate)
+      if (framerate === Math.floor(framerate)) {
+        this.changeAVStreamTimebase(newStream, { num: 1, den: framerate * 256 })
+      }
+    }
 
-    if (newStream.codecpar.extradata) {
+    if (newStream.codecpar.extradata && !copy) {
       avFree(newStream.codecpar.extradata)
       newStream.codecpar.extradata = nullptr
       newStream.codecpar.extradataSize = 0
@@ -621,7 +663,9 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
       newStream.duration = avRescaleQ(static_cast<int64>(task.options.duration), AV_MILLI_TIME_BASE_Q, newStream.timeBase)
     }
 
-    newStream.metadata[AVStreamMetadataKey.ENCODER] = `libmedia-${defined(VERSION)}`
+    if (!copy) {
+      newStream.metadata[AVStreamMetadataKey.ENCODER] = `libmedia-${defined(VERSION)}`
+    }
 
     return newStream
   }
@@ -708,7 +752,9 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
 
             try {
               const len = await (task.options.input.file as CustomIOLoader).read(length, buffer)
-              task.stats.bufferReceiveBytes += static_cast<int64>(len)
+              if (len > 0) {
+                task.stats.bufferReceiveBytes += static_cast<int64>(len)
+              }
               ipcPort.reply(request, len)
             }
             catch (error) {
@@ -801,7 +847,7 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
       logger.fatal('invalid output format')
     }
 
-    task.format = format
+    task.oformat = format
 
     let ret = await this.MuxThread.registerTask.transfer(muxer2OutputChannel.port1)
       .invoke({
@@ -811,7 +857,9 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
         avpacketListMutex: addressof(this.GlobalData.avpacketListMutex),
         stats: addressof(task.stats),
         rightPort: muxer2OutputChannel.port1,
-        formatOptions: task.options.output.formatOptions
+        formatOptions: task.options.output.formatOptions,
+        zeroStart: task.options.startAtZero ?? false,
+        nonnegative: task.options.nonnegative ?? false
       })
 
     if (ret < 0) {
@@ -1050,21 +1098,28 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
       return 0
     }
     else if (audioConfig?.codec === 'copy' && !(task.options.start || task.options.duration)) {
-      const demuxer2MuxerChannel = createMessageChannel()
-      await this.DemuxerThread.connectStreamTask
-        .transfer(demuxer2MuxerChannel.port1)
-        .invoke(task.taskId, stream.index, demuxer2MuxerChannel.port1)
+      let newStream = this.copyAVStreamInterface(task, stream, true)
+      try {
+        const demuxer2MuxerChannel = createMessageChannel()
+        await this.DemuxerThread.connectStreamTask
+          .transfer(demuxer2MuxerChannel.port1)
+          .invoke(task.taskId, newStream.index, demuxer2MuxerChannel.port1)
 
-      await this.MuxThread.addStream
-        .transfer(demuxer2MuxerChannel.port2)
-        .invoke(task.taskId, stream, demuxer2MuxerChannel.port2)
+        await this.MuxThread.addStream
+          .transfer(demuxer2MuxerChannel.port2)
+          .invoke(task.taskId, newStream, demuxer2MuxerChannel.port2)
 
-      task.streams.push({
-        input: stream,
-        demuxer2MuxerChannel
-      })
-
-      return 0
+        freeCodecParameters(newStream.codecpar)
+        task.streams.push({
+          input: stream,
+          demuxer2MuxerChannel
+        })
+        return 0
+      }
+      catch (error) {
+        freeCodecParameters(newStream.codecpar)
+        throw error
+      }
     }
     else {
       const demuxer2DecoderChannel = createMessageChannel()
@@ -1110,6 +1165,71 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
         if (audioConfig.profile) {
           newStream.codecpar.profile = audioConfig.profile
         }
+      }
+
+      if (task.oformat === AVFormat.WAV) {
+        if (!(newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_PCM_F32LE
+          || newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_PCM_F64LE
+          || newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_PCM_U8
+          || newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_PCM_S16LE
+          || newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_PCM_S24LE
+          || newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_PCM_S32LE
+          || newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_PCM_S64LE)
+        ) {
+          let format = newStream.codecpar.format as AVSampleFormat
+          switch (format) {
+            case AVSampleFormat.AV_SAMPLE_FMT_FLT:
+            case AVSampleFormat.AV_SAMPLE_FMT_FLTP:
+              newStream.codecpar.codecId = AVCodecID.AV_CODEC_ID_PCM_F32LE
+              break
+            case AVSampleFormat.AV_SAMPLE_FMT_DBL:
+            case AVSampleFormat.AV_SAMPLE_FMT_DBLP:
+              newStream.codecpar.codecId = AVCodecID.AV_CODEC_ID_PCM_F64LE
+              break
+            case AVSampleFormat.AV_SAMPLE_FMT_U8:
+            case AVSampleFormat.AV_SAMPLE_FMT_U8P:
+              newStream.codecpar.codecId = AVCodecID.AV_CODEC_ID_PCM_U8
+              break
+            case AVSampleFormat.AV_SAMPLE_FMT_S16:
+            case AVSampleFormat.AV_SAMPLE_FMT_S16P:
+              newStream.codecpar.codecId = AVCodecID.AV_CODEC_ID_PCM_S16LE
+              break
+            case AVSampleFormat.AV_SAMPLE_FMT_S32:
+            case AVSampleFormat.AV_SAMPLE_FMT_S32P:
+              newStream.codecpar.codecId = AVCodecID.AV_CODEC_ID_PCM_S32LE
+              break
+            case AVSampleFormat.AV_SAMPLE_FMT_S64:
+            case AVSampleFormat.AV_SAMPLE_FMT_S64P:
+              newStream.codecpar.codecId = AVCodecID.AV_CODEC_ID_PCM_S64LE
+              break
+            default:
+              newStream.codecpar.codecId = AVCodecID.AV_CODEC_ID_PCM_F32LE
+              break
+          }
+        }
+
+        switch (newStream.codecpar.codecId) {
+          case AVCodecID.AV_CODEC_ID_PCM_F32LE:
+            newStream.codecpar.format = AVSampleFormat.AV_SAMPLE_FMT_FLT
+            break
+          case AVCodecID.AV_CODEC_ID_PCM_F64LE:
+            newStream.codecpar.format = AVSampleFormat.AV_SAMPLE_FMT_DBL
+            break
+          case AVCodecID.AV_CODEC_ID_PCM_U8:
+            newStream.codecpar.format = AVSampleFormat.AV_SAMPLE_FMT_U8
+            break
+          case AVCodecID.AV_CODEC_ID_PCM_S16LE:
+            newStream.codecpar.format = AVSampleFormat.AV_SAMPLE_FMT_S16
+            break
+          case AVCodecID.AV_CODEC_ID_PCM_S24LE:
+          case AVCodecID.AV_CODEC_ID_PCM_S32LE:
+            newStream.codecpar.format = AVSampleFormat.AV_SAMPLE_FMT_S32
+            break
+          case AVCodecID.AV_CODEC_ID_PCM_S64LE:
+            newStream.codecpar.format = AVSampleFormat.AV_SAMPLE_FMT_S64
+            break
+        }
+        newStream.codecpar.bitsPerCodedSample = pcm.getBitsPerSample(stream.codecpar.codecId)
       }
 
       if (newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_AAC) {
@@ -1168,7 +1288,7 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
         }
       }
 
-      if (task.format === AVFormat.MOV) {
+      if (task.oformat === AVFormat.MOV) {
         this.changeAVStreamTimebase(newStream, { num: 1, den: newStream.codecpar.sampleRate })
       }
 
@@ -1320,6 +1440,7 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
           avpacketListMutex: addressof(this.GlobalData.avpacketListMutex),
           avframeList: addressof(this.GlobalData.avframeList),
           avframeListMutex: addressof(this.GlobalData.avframeListMutex),
+          copyTs: task.options.copyTs ?? false
         })
 
       ret = await this.AudioEncoderThread.open(taskId, newStream.codecpar, { num: newStream.timeBase.num, den: newStream.timeBase.den })
@@ -1354,21 +1475,28 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
       return 0
     }
     else if (videoConfig?.codec === 'copy' && !(task.options.start || task.options.duration)) {
-      const demuxer2MuxerChannel = createMessageChannel()
-      await this.DemuxerThread.connectStreamTask
-        .transfer(demuxer2MuxerChannel.port1)
-        .invoke(task.subTaskId || task.taskId, stream.index, demuxer2MuxerChannel.port1)
+      let newStream = this.copyAVStreamInterface(task, stream, true)
+      try {
+        const demuxer2MuxerChannel = createMessageChannel()
+        await this.DemuxerThread.connectStreamTask
+          .transfer(demuxer2MuxerChannel.port1)
+          .invoke(task.subTaskId || task.taskId, newStream.index, demuxer2MuxerChannel.port1)
 
-      await this.MuxThread.addStream
-        .transfer(demuxer2MuxerChannel.port2)
-        .invoke(task.taskId, stream, demuxer2MuxerChannel.port2)
+        await this.MuxThread.addStream
+          .transfer(demuxer2MuxerChannel.port2)
+          .invoke(task.taskId, newStream, demuxer2MuxerChannel.port2)
 
-      task.streams.push({
-        input: stream,
-        demuxer2MuxerChannel
-      })
-
-      return 0
+        freeCodecParameters(newStream.codecpar)
+        task.streams.push({
+          input: stream,
+          demuxer2MuxerChannel
+        })
+        return 0
+      }
+      catch (error) {
+        freeCodecParameters(newStream.codecpar)
+        throw error
+      }
     }
     else {
       const demuxer2DecoderChannel = createMessageChannel()
@@ -1378,6 +1506,8 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
       const filter2EncoderChannel = createMessageChannel()
 
       const newStream = this.copyAVStreamInterface(task, stream)
+      newStream.codecpar.flags &= ~AVCodecParameterFlags.AV_CODECPAR_FLAG_NO_PTS
+      newStream.codecpar.flags &= ~AVCodecParameterFlags.AV_CODECPAR_FLAG_NO_DTS
 
       const taskId = generateUUID()
 
@@ -1477,7 +1607,9 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
         }
       }
 
-      if (!videoConfig || videoConfig.delay == null) {
+      if ((!videoConfig || videoConfig.delay == null)
+        && newStream.codecpar.videoDelay === 0
+      ) {
         // 这个用来设置 max_b_frame_count，只针对 wasm 编码器，webcodecs 目前无法编码出 B 帧
         newStream.codecpar.videoDelay = 4
       }
@@ -1487,23 +1619,16 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
         || newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC
         || newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
       ) {
-        if (task.format === AVFormat.MPEGTS) {
-          newStream.codecpar.bitFormat = BitFormat.ANNEXB
+        if (task.oformat === AVFormat.MPEGTS) {
+          newStream.codecpar.flags |= AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB
         }
         else {
-          newStream.codecpar.bitFormat = BitFormat.AVCC
+          newStream.codecpar.flags &= ~AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB
         }
       }
 
       if (newStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_MPEG4 && newStream.timeBase.den > 65535) {
         this.changeAVStreamTimebase(newStream, { num: 1, den: 65535 })
-      }
-      else if (task.format === AVFormat.MOV) {
-        // 如果是整数帧率，调整时间基为 framerate 的倍数，节省 stts box 的大小
-        const framerate = avQ2D(newStream.codecpar.framerate)
-        if (framerate === Math.floor(framerate)) {
-          this.changeAVStreamTimebase(newStream, { num: 1, den: framerate * 256 })
-        }
       }
 
       await this.DemuxerThread.connectStreamTask
@@ -1715,7 +1840,8 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
           avframeList: addressof(this.GlobalData.avframeList),
           avframeListMutex: addressof(this.GlobalData.avframeListMutex),
           gop: static_cast<int32>(avQ2D(newStream.codecpar.framerate) * (videoConfig.keyFrameInterval ?? 5000) / 1000),
-          preferWebCodecs: !isHdr(newStream.codecpar) && !hasAlphaChannel(newStream.codecpar) && !!videoConfig.enableWebCodecs
+          preferWebCodecs: !isHdr(newStream.codecpar) && !hasAlphaChannel(newStream.codecpar) && !!videoConfig.enableWebCodecs,
+          copyTs: task.options.copyTs ?? false
         })
 
       ret = await this.VideoEncoderThread.open(taskId, newStream.codecpar, { num: newStream.timeBase.num, den: newStream.timeBase.den }, wasmEncoderOptions)
@@ -1744,21 +1870,28 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
   }
 
   private async handleCopyStream(stream: AVStreamInterface, task: SelfTask): Promise<number> {
-    const demuxer2MuxerChannel = createMessageChannel()
-    await this.DemuxerThread.connectStreamTask
-      .transfer(demuxer2MuxerChannel.port1)
-      .invoke(task.subTaskId || task.taskId, stream.index, demuxer2MuxerChannel.port1)
+    let newStream = this.copyAVStreamInterface(task, stream, true)
+    try {
+      const demuxer2MuxerChannel = createMessageChannel()
+      await this.DemuxerThread.connectStreamTask
+        .transfer(demuxer2MuxerChannel.port1)
+        .invoke(task.subTaskId || task.taskId, newStream.index, demuxer2MuxerChannel.port1)
 
-    await this.MuxThread.addStream
-      .transfer(demuxer2MuxerChannel.port2)
-      .invoke(task.taskId, stream, demuxer2MuxerChannel.port2)
+      await this.MuxThread.addStream
+        .transfer(demuxer2MuxerChannel.port2)
+        .invoke(task.taskId, newStream, demuxer2MuxerChannel.port2)
 
-    task.streams.push({
-      input: stream,
-      demuxer2MuxerChannel
-    })
-
-    return 0
+      freeCodecParameters(newStream.codecpar)
+      task.streams.push({
+        input: stream,
+        demuxer2MuxerChannel
+      })
+      return 0
+    }
+    catch (error) {
+      freeCodecParameters(newStream.codecpar)
+      throw error
+    }
   }
 
   private async clearTask(task: SelfTask) {
@@ -1821,7 +1954,8 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
       ioloader2DemuxerChannel: null,
       muxer2OutputChannel: null,
       stats,
-      format: AVFormat.UNKNOWN,
+      iformat: AVFormat.UNKNOWN,
+      oformat: AVFormat.UNKNOWN,
       streams: [],
       formatContext: null,
       controller: new Controller(this)
@@ -1834,6 +1968,23 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
       await this.setTaskOutput(task)
 
       const formatContext = task.formatContext = await this.analyzeInputStreams(task)
+
+      await this.MuxThread.addFormatContextMetadata(
+        task.taskId,
+        object.extend({}, task.options.output.metadata ?? {}, formatContext.metadata)
+      )
+      if (formatContext.chapters.length || task.options.output.chapters?.length) {
+        const chapters: AVChapter[] = []
+        if (formatContext.chapters.length) {
+          chapters.push(...formatContext.chapters)
+        }
+        if (task.options.output.chapters?.length) {
+          chapters.push(...task.options.output.chapters)
+        }
+        await this.MuxThread.addFormatContextChapters(task.taskId, chapters)
+      }
+
+      task.iformat = formatContext.format
 
       for (let i = 0; i < formatContext.streams.length; i++) {
         const mediaType = formatContext.streams[i].codecpar.codecType
@@ -1854,7 +2005,7 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
 
       const oformatContext: AVFormatContextInterface = {
         streams: [],
-        format: task.format,
+        format: task.oformat,
         metadata: {},
         chapters: []
       }
@@ -1943,6 +2094,9 @@ export default class AVTranscoder extends Emitter implements ControllerObserver 
         if (buffer) {
           const extradata: pointer<uint8> = avMalloc(buffer.length)
           memcpyFromUint8Array(extradata, buffer.length, buffer)
+          if (streams[i].output.codecpar.extradata) {
+            avFree(streams[i].output.codecpar.extradata)
+          }
           streams[i].output.codecpar.extradata = extradata
           streams[i].output.codecpar.extradataSize = buffer.length
           updated = true

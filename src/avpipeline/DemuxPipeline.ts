@@ -62,19 +62,28 @@ import * as is from 'common/util/is'
 import * as h264 from 'avutil/codecs/h264'
 import * as hevc from 'avutil/codecs/hevc'
 import * as vvc from 'avutil/codecs/vvc'
-import { IRtspFormatOptions } from 'avformat/formats/IRtspFormat'
-import { IFlvFormatOptions } from 'avformat/formats/IFlvFormat'
-import { MovFormatOptions } from 'avformat/formats/mov/type'
-import IH264Format, { IH264FormatOptions } from 'avformat/formats/IH264Format'
-import IHevcFormat, { IHevcFormatOptions } from 'avformat/formats/IHevcFormat'
-import IVvcFormat, { IVvcFormatOptions } from 'avformat/formats/IVvcFormat'
+// import { IRtspFormatOptions } from 'avformat/formats/IRtspFormat'
+// import { IFlvFormatOptions } from 'avformat/formats/IFlvFormat'
+// import { MovFormatOptions } from 'avformat/formats/mov/type'
+import IH264Format from 'avformat/formats/IH264Format'
+import IHevcFormat from 'avformat/formats/IHevcFormat'
+import IVvcFormat from 'avformat/formats/IVvcFormat'
 import support from 'common/util/support'
 import IMovFormat from 'avformat/formats/IMovFormat'
 import IMpegpsFormat from 'avformat/formats/IMpegpsFormat'
 import IMpegtsFormat from 'avformat/formats/IMpegtsFormat'
 import IMatroskaFormat from 'avformat/formats/IMatroskaFormat'
 
+import { type IRtspFormatOptions } from 'avformat/formats/IRtspFormat'
+import { type IFlvFormatOptions } from 'avformat/formats/IFlvFormat'
+import { type IMovFormatOptions } from 'avformat/formats/IMovFormat'
+import { type IH264FormatOptions } from 'avformat/formats/IH264Format'
+import { type IHevcFormatOptions } from 'avformat/formats/IHevcFormat'
+import { type IVvcFormatOptions } from 'avformat/formats/IVvcFormat'
+import { type IAviFormatOptions } from 'avformat/formats/IAviFormat'
+
 export const STREAM_INDEX_ALL = -1
+const MAX_QUEUE_LENGTH_DEFAULT = 5000
 
 export interface DemuxTaskOptions extends TaskOptions {
   format?: AVFormat
@@ -99,6 +108,7 @@ type SelfTask = DemuxTaskOptions & {
   oBuffer: pointer<uint8>
 
   cacheAVPackets: Map<number, pointer<AVPacketRef>[]>
+  pendingAVPackets: Map<number, pointer<AVPacketRef>[]>
   cacheRequests: Map<number, RpcMessage>
   streamIndexFlush: Map<number, boolean>
 
@@ -273,6 +283,7 @@ export default class DemuxPipeline extends Pipeline {
       cacheAVPackets: new Map(),
       cacheRequests: new Map(),
       streamIndexFlush: new Map(),
+      pendingAVPackets: new Map(),
 
       realFormat: AVFormat.UNKNOWN,
 
@@ -329,7 +340,7 @@ export default class DemuxPipeline extends Pipeline {
         case AVFormat.MP4:
           if (defined(ENABLE_DEMUXER_MP4) || defined(ENABLE_PROTOCOL_DASH)) {
             // iformat = new ((await import('avformat/formats/IMovFormat')).default)(task.formatOptions as MovFormatOptions)
-            iformat = new IMovFormat(task.formatOptions as MovFormatOptions)
+            iformat = new IMovFormat(task.formatOptions as IMovFormatOptions)
           }
           else {
             logger.error('mp4 format not support, maybe you can rebuild avmedia')
@@ -496,6 +507,15 @@ export default class DemuxPipeline extends Pipeline {
         //     return errorType.FORMAT_NOT_SUPPORT
         //   }
         //   break
+        // case AVFormat.AVI:
+        //   if (defined(ENABLE_DEMUXER_AVI)) {
+        //     iformat = new (((await import('avformat/formats/IAviFormat')).default))(task.formatOptions as IAviFormatOptions)
+        //   }
+        //   else {
+        //     logger.error('avi format not support, maybe you can rebuild avmedia')
+        //     return errorType.FORMAT_NOT_SUPPORT
+        //   }
+        //   break
         default:
           logger.error('format not support')
           return errorType.FORMAT_NOT_SUPPORT
@@ -630,7 +650,17 @@ export default class DemuxPipeline extends Pipeline {
     }
   }
 
-  public async changeConnectStream(taskId: string, newStreamIndex: number, oldStreamIndex: number, force: boolean = true) {
+  public async addPendingStream(taskId: string, streamIndex: number) {
+    const task = this.tasks.get(taskId)
+    if (task) {
+      task.pendingAVPackets.set(streamIndex, [])
+    }
+    else {
+      logger.fatal('task not found')
+    }
+  }
+
+  public async changeConnectStream(taskId: string, newStreamIndex: number, oldStreamIndex: number, force: boolean = true, start: boolean = false) {
     const task = this.tasks.get(taskId)
     if (task) {
 
@@ -638,7 +668,7 @@ export default class DemuxPipeline extends Pipeline {
         return
       }
 
-      const cache = task.cacheAVPackets.get(oldStreamIndex)
+      let cache = task.cacheAVPackets.get(oldStreamIndex)
       const ipcPort = task.rightIPCPorts.get(oldStreamIndex)
       const request = task.cacheRequests.get(oldStreamIndex)
 
@@ -649,13 +679,27 @@ export default class DemuxPipeline extends Pipeline {
       await task.loop.stopBeforeNextTick()
 
       if (force) {
-        array.each(cache, (avpacket) => {
-          task.avpacketPool.release(avpacket)
-        })
-        cache.length = 0
+        if (!task.pendingAVPackets.has(newStreamIndex)) {
+          array.each(cache, (avpacket) => {
+            task.avpacketPool.release(avpacket)
+          })
+          cache.length = 0
+        }
       }
       else {
         task.streamIndexFlush.set(newStreamIndex, true)
+      }
+
+      if (task.pendingAVPackets.has(newStreamIndex)) {
+        task.pendingAVPackets.set(oldStreamIndex, cache)
+        cache = task.pendingAVPackets.get(newStreamIndex)
+        task.pendingAVPackets.delete(newStreamIndex)
+      }
+      if (task.formatContext.streams[newStreamIndex].codecpar.codecType === AVMediaType.AVMEDIA_TYPE_AUDIO) {
+        task.stats.audioPacketQueueLength = cache.length
+      }
+      else if (task.formatContext.streams[newStreamIndex].codecpar.codecType === AVMediaType.AVMEDIA_TYPE_VIDEO) {
+        task.stats.videoPacketQueueLength = cache.length
       }
 
       ipcPort.streamIndex = newStreamIndex
@@ -671,7 +715,7 @@ export default class DemuxPipeline extends Pipeline {
         task.cacheRequests.delete(oldStreamIndex)
       }
 
-      if (!force) {
+      if (!force || start) {
         task.loop.start()
       }
 
@@ -789,6 +833,33 @@ export default class DemuxPipeline extends Pipeline {
             }
           }
         }
+        else if (task.pendingAVPackets.has(streamIndex)) {
+          const pending = task.pendingAVPackets.get(streamIndex)
+          pending.push(avpacket)
+          if (task.stats !== nullptr) {
+            const type = task.formatContext.streams[streamIndex].codecpar.codecType
+            while (pending.length) {
+              const head = pending[0]
+              const time = avRescaleQ2(head.pts, addressof(head.timeBase), AV_MILLI_TIME_BASE_Q)
+              const currentTime = bigint.max(task.stats.audioCurrentTime, task.stats.videoCurrentTime)
+              if (type === AVMediaType.AVMEDIA_TYPE_AUDIO
+                && time >= currentTime
+                || type === AVMediaType.AVMEDIA_TYPE_VIDEO
+                  && time >= currentTime
+                || (type !== AVMediaType.AVMEDIA_TYPE_AUDIO && type !== AVMediaType.AVMEDIA_TYPE_VIDEO)
+                  && pending.length <= minQueueLength
+              ) {
+                break
+              }
+              task.avpacketPool.release(pending.shift())
+            }
+          }
+          else {
+            if (pending.length > minQueueLength) {
+              task.avpacketPool.release(pending.shift())
+            }
+          }
+        }
         else {
           if (task.rightIPCPorts.has(STREAM_INDEX_ALL)) {
             if (task.cacheRequests.has(STREAM_INDEX_ALL)) {
@@ -807,7 +878,10 @@ export default class DemuxPipeline extends Pipeline {
     }
     else {
       task.avpacketPool.release(avpacket)
-      if (ret !== IOError.END) {
+      if (ret !== IOError.END && ret !== IOError.ABORT) {
+        task.controlIPCPort.notify('demuxError', {
+          code: ret
+        })
         logger.error(`demux error, ret: ${ret}, taskId: ${task.taskId}`)
       }
       for (let streamIndex of task.cacheRequests.keys()) {
@@ -834,6 +908,7 @@ export default class DemuxPipeline extends Pipeline {
       task.loop = new LoopTask(async () => {
         if (!isLive) {
           let canDo = false
+          let isMaxQueue = false
           task.cacheAVPackets.forEach((list, streamIndex) => {
             const stream = task.formatContext.streams.find((stream) => {
               return stream.index === streamIndex
@@ -845,9 +920,12 @@ export default class DemuxPipeline extends Pipeline {
             ) {
               canDo = true
             }
+            if (list.length > Math.max(minQueueLength * 2, MAX_QUEUE_LENGTH_DEFAULT)) {
+              isMaxQueue = true
+            }
           })
 
-          if (!canDo) {
+          if (!canDo || isMaxQueue) {
             task.loop.emptyTask()
             return
           }
@@ -860,11 +938,11 @@ export default class DemuxPipeline extends Pipeline {
         }
       }, 0, 0, true, false)
 
-      if (isLive) {
+      if (isLive && task.cacheAVPackets.size) {
         while (true) {
           let done = false
           task.cacheAVPackets.forEach((list, streamIndex) => {
-            if (list.length > minQueueLength) {
+            if (list.length >= minQueueLength) {
               done = true
             }
           })
@@ -897,7 +975,8 @@ export default class DemuxPipeline extends Pipeline {
         await task.loop.stopBeforeNextTick()
         let ret: int32 | int64 = await demux.seek(task.formatContext, streamIndex, timestamp, flags)
         if (ret >= 0n) {
-          task.cacheAVPackets.forEach((list) => {
+
+          function resetList(list: pointer<AVPacketRef>[]) {
             array.each(list, (avpacket) => {
               if (task.formatContext.ioReader.flags & IOFlags.SLICE) {
                 const newSideData = getAVPacketSideData(avpacket, AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA)
@@ -909,7 +988,10 @@ export default class DemuxPipeline extends Pipeline {
               task.avpacketPool.release(avpacket)
             })
             list.length = 0
-          })
+          }
+
+          task.cacheAVPackets.forEach(resetList)
+          task.pendingAVPackets.forEach(resetList)
 
           if (task.stats !== nullptr) {
             // 判断当前 task 处理的 stream 来重置
@@ -994,7 +1076,7 @@ export default class DemuxPipeline extends Pipeline {
           return false
         }
         let hasNewSps = getAVPacketSideData(avpacket, AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA) !== nullptr
-        if (!hasNewSps && avpacket.bitFormat === h264.BitFormat.ANNEXB) {
+        if (!hasNewSps && (avpacket.flags & AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB)) {
           if (codecId === AVCodecID.AV_CODEC_ID_H264) {
             hasNewSps = !!h264.generateAnnexbExtradata(getAVPacketData(avpacket))
           }
@@ -1008,8 +1090,16 @@ export default class DemuxPipeline extends Pipeline {
         return hasNewSps
       }
 
-      // 先处理视频
+      const cacheAVPackets: Map<number, pointer<AVPacketRef>[]> = new Map()
       task.cacheAVPackets.forEach((list, streamIndex) => {
+        cacheAVPackets.set(streamIndex, list)
+      })
+      task.pendingAVPackets.forEach((list, streamIndex) => {
+        cacheAVPackets.set(streamIndex, list)
+      })
+
+      // 先处理视频
+      cacheAVPackets.forEach((list, streamIndex) => {
         const codecType = task.formatContext.streams[streamIndex].codecpar.codecType
         const codecId = task.formatContext.streams[streamIndex].codecpar.codecId
         if (codecType === AVMediaType.AVMEDIA_TYPE_VIDEO) {
@@ -1047,7 +1137,7 @@ export default class DemuxPipeline extends Pipeline {
       })
 
       // 再处理非视频，裁剪到视频处
-      task.cacheAVPackets.forEach((list, streamIndex) => {
+      cacheAVPackets.forEach((list, streamIndex) => {
         const codecType = task.formatContext.streams[streamIndex].codecpar.codecType
         if (codecType !== AVMediaType.AVMEDIA_TYPE_VIDEO) {
           const lastDts = list[list.length - 1].dts
@@ -1064,10 +1154,10 @@ export default class DemuxPipeline extends Pipeline {
         }
       })
       // 判断所有流是否都支持裁剪
-      if (indexes.size === task.cacheAVPackets.size) {
+      if (indexes.size === cacheAVPackets.size) {
         indexes.forEach((index, streamIndex) => {
 
-          const list = task.cacheAVPackets.get(streamIndex)
+          const list = cacheAVPackets.get(streamIndex)
           list.splice(0, index).forEach((avpacket) => {
             task.avpacketPool.release(avpacket)
           })
@@ -1104,12 +1194,20 @@ export default class DemuxPipeline extends Pipeline {
   public async unregisterTask(taskId: string): Promise<void> {
     const task = this.tasks.get(taskId)
     if (task) {
+      if (task.ioReader && (task.ioReader.flags & IOFlags.NETWORK)) {
+        task.ioReader.abort()
+      }
       if (task.loop) {
         await task.loop.stopBeforeNextTick()
         task.loop.destroy()
       }
 
       task.cacheAVPackets.forEach((list) => {
+        list.forEach((avpacket) => {
+          task.avpacketPool.release(avpacket)
+        })
+      })
+      task.pendingAVPackets.forEach((list) => {
         list.forEach((avpacket) => {
           task.avpacketPool.release(avpacket)
         })
@@ -1122,7 +1220,12 @@ export default class DemuxPipeline extends Pipeline {
 
       await task.formatContext.destroy()
 
-      task.leftIPCPort.destroy()
+      if (!task.mainTaskId) {
+        task.leftIPCPort.destroy()
+        if (task.controlIPCPort) {
+          task.controlIPCPort.destroy()
+        }
+      }
       task.rightIPCPorts.forEach((ipcPort) => {
         ipcPort.destroy()
       })
@@ -1137,6 +1240,7 @@ export default class DemuxPipeline extends Pipeline {
         task.oBuffer = nullptr
       }
       this.tasks.delete(taskId)
+      logger.debug(`unregisterTask task, taskId: ${taskId}`)
     }
   }
 }

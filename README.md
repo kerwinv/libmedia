@@ -50,6 +50,10 @@ libmedia 支持多线程，但需要页面可以使用 SharedArrayBuffer，你�
 - AVTranscoder 是 libmedia 的转码工具实现 
 [在线 demo](https://zhaohappy.github.io/libmedia/test/avtranscoder.html)
 
+### 使用
+
+查看 [编译配置示例](https://github.com/zhaohappy/libmedia-example) 找到对应你的构建工具的参考示例，快速知道如何集成 libmedia 到你的项目中。
+
 ### 当前支持的封装格式
 
 | Format   | Input   | Output    |
@@ -61,6 +65,7 @@ libmedia 支持多线程，但需要页面可以使用 SharedArrayBuffer，你�
 | mpegps   | ✅       | ❌        |
 | matroska | ✅       | ✅        |
 | webm     | ✅       | ✅        |
+| avi      | ✅       | ❌        |
 | h264 裸流 | ✅       | ❌        |
 | hevc 裸流 | ✅       | ❌        |
 | vvc  裸流 | ✅       | ❌        |
@@ -69,7 +74,7 @@ libmedia 支持多线程，但需要页面可以使用 SharedArrayBuffer，你�
 | ivf      | ✅       | ✅        |
 | aac      | ✅       | ❌        |
 | flac     | ✅       | ❌        |
-| wav      | ✅       | ❌        |
+| wav      | ✅       | ✅        |
 | webvtt   | ✅       | ❌        |
 | srt      | ✅       | ❌        |
 | ass      | ✅       | ❌        |
@@ -118,6 +123,15 @@ libmedia 支持多线程，但需要页面可以使用 SharedArrayBuffer，你�
 | mpeg2       | ✅         | ✅          | ✅          | ✅            | ❌                 |
 | mpeg4       | ✅         | ✅          | ✅          | ✅            | ❌                 |
 | theora      | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| h261        | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| h263        | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| wmv         | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| mjpeg       | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| rv10        | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| rv20        | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| rv30        | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| rv40        | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| msmpeg4     | ✅         | ✅          | ✅          | ✅            | ❌                 |
 | aac         | ✅         | ✅          | ✅          | ✅            | ✅                 |
 | mp3         | ✅         | ✅          | ✅          | ✅            | ✅                 |
 | opus        | ✅         | ✅          | ✅          | ✅            | ✅                 |
@@ -127,6 +141,10 @@ libmedia 支持多线程，但需要页面可以使用 SharedArrayBuffer，你�
 | ac3         | ✅         | ✅          | ✅          | ✅            | ❌                 |
 | eac3        | ✅         | ✅          | ✅          | ✅            | ❌                 |
 | dts         | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| wma         | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| cook        | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| sipr        | ✅         | ✅          | ✅          | ✅            | ❌                 |
+| ralf        | ✅         | ✅          | ✅          | ✅            | ❌                 |
 | G.711 A-law | ✅         | ✅          | ✅          | ✅            | ❌                 |
 | G.711 μ-law | ✅         | ✅          | ✅          | ✅            | ❌                 |
 

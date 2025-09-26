@@ -29,7 +29,7 @@ import { AVCodecID, AVMediaType } from 'avutil/codec'
 import { IOError } from 'common/io/error'
 import * as errorType from 'avutil/error'
 import IFormat from './IFormat'
-import { AVFormat } from 'avutil/avformat'
+import { AVFormat, AVSeekFlags } from 'avutil/avformat'
 import { memcpyFromUint8Array } from 'cheap/std/memory'
 import { avMalloc } from 'avutil/util/mem'
 import { addAVPacketData, createAVPacket, destroyAVPacket, refAVPacket } from 'avutil/util/avpacket'
@@ -43,8 +43,12 @@ import BitReader from 'common/io/BitReader'
 import * as expgolomb from 'avutil/util/expgolomb'
 import NaluReader from './nalu/NaluReader'
 import * as naluUtil from 'avutil/util/nalu'
+import { AVCodecParameterFlags } from 'avutil/struct/avcodecparameters'
 
 export interface IH264FormatOptions {
+  /**
+   * 显示帧率
+   */
   framerate?: Rational
 }
 
@@ -176,7 +180,7 @@ export default class IH264Format extends IFormat {
     stream.codecpar.codecId = AVCodecID.AV_CODEC_ID_H264
     stream.timeBase.den = AV_TIME_BASE
     stream.timeBase.num = 1
-    stream.codecpar.bitFormat = h264.BitFormat.ANNEXB
+    stream.codecpar.flags |= AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB
     this.currentDts = 0n
     this.currentPts = 0n
     this.naluPos = 0n
@@ -230,7 +234,7 @@ export default class IH264Format extends IFormat {
         avpacket.flags |= AVPacketFlags.AV_PKT_FLAG_KEY
         avpacket.timeBase.num = stream.timeBase.num
         avpacket.timeBase.den = stream.timeBase.den
-        avpacket.bitFormat = h264.BitFormat.ANNEXB
+        avpacket.flags |= AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB
 
         formatContext.interval.packetBuffer.push(avpacket)
 
@@ -351,7 +355,7 @@ export default class IH264Format extends IFormat {
     avpacket.streamIndex = stream.index
     avpacket.timeBase.num = stream.timeBase.num
     avpacket.timeBase.den = stream.timeBase.den
-    avpacket.bitFormat = h264.BitFormat.ANNEXB
+    avpacket.flags |= AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB
 
     if (isKey) {
       avpacket.flags |= AVPacketFlags.AV_PKT_FLAG_KEY
@@ -441,6 +445,12 @@ export default class IH264Format extends IFormat {
   }
 
   public async seek(formatContext: AVIFormatContext, stream: AVStream, timestamp: int64, flags: int32): Promise<int64> {
+    const now = formatContext.ioReader.getPos()
+
+    if (flags & AVSeekFlags.BYTE) {
+      await formatContext.ioReader.seek(timestamp)
+      return now
+    }
     return static_cast<int64>(errorType.FORMAT_NOT_SUPPORT)
   }
 

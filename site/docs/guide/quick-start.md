@@ -9,6 +9,8 @@ order: 2
 
 # 快速上手
 
+查看 [编译配置示例](https://github.com/zhaohappy/libmedia-example) 找到对应你的构建工具的参考示例，快速知道如何集成 libmedia 到你的项目中。
+
 ## 准备
 
 libmedia 基于 cheap 库开发，在使用之前需要你对 [cheap](https://github.com/zhaohappy/cheap) 有所了解；需要能够理解 cheap 的开发思想，掌握指针的用法。如果你学过 C 语言则非常好上手。
@@ -37,7 +39,7 @@ yarn add @libmedia/avcodec
 
 :::
 
-查看 [package](./package.md) 获取 ```@libmedia``` 下都有哪些包，你可以根据自己的需要进行安装。这其中 ```@libmedia/common```、 ```@libmedia/cheap``` ```@libmedia/avplayer``` ```@libmedia/avplayer-ui``` ```@libmedia/avtranscoder``` 五个包的版本号单独发布；其余包在发布时版本号会保持一致。如果项目依赖多个 ```@libmedia/*``` 下除上面所列的五个包，务必让它们的版本号保持一致。一般情况下 ```@libmedia/common``` 和 ```@libmedia/cheap``` 两个包无需自己安装，它们作为其他包的依赖会自动安装。
+查看 [package](./package.md) 获取 ```@libmedia``` 下都有哪些包，你可以根据自己的需要进行安装。这其中 ```@libmedia/common```、 ```@libmedia/cheap``` ```@libmedia/avplayer``` ```@libmedia/avplayer-ui``` ```@libmedia/avtranscoder``` 五个包的版本号单独发布；其余包在发布时版本号会保持一致。如果项目依赖多个 ```@libmedia/*``` 下除上面所列的五个包，务必让它们的版本号保持一致。一般情况下 ```@libmedia/common``` 和 ```@libmedia/cheap``` 两个包无需自己安装，它们作为其他包的依赖会自动安装，自动安装之后将安装的版本号在 ```package.json``` 中声明即可。
 
 每个包都同时拥有 es6 模块和 commonjs 模块；es6 模块给浏览器环境使用，commonjs 模块给 Node 环境使用。当你使用 import 导入的是 es6 模块，使用 require 导入的是 commonjs 模块。若你的运行环境是 Node 环境而源码使用的是 es6 模块开发，需要编译成 commonjs 模块代码在 Node 中运行。
 
@@ -195,7 +197,21 @@ yarn add tslib
 :::
 
 
-> vite 默认使用 esbuild 来编译 ts，但 esbuild 是不支持 transformer 的，所以需要使用 tsc 来编译使用到 libmedia API 的模块。你可以通过设置 typescript 插件的 tsconfig 中 src 配置来控制哪些文件经过 typescript 插件使用 transformer 来编译，建议将相关文件放到一个目录下。
+vite 默认使用 esbuild 来编译 ts，但 esbuild 是不支持 transformer 的，所以需要使用 tsc 来编译使用到 libmedia API 的模块。
+
+你可以通过设置 ts-loader 的 tsconfig 中 include 配置来控制哪些文件经过 typescript 插件使用 cheap transformer 来编译，建议将相关文件放到一个目录下。这样其他没有包括的 ts 文件使用之前的工具链去处理；但需要让 ts-loader 的优先级最高，这样才能让 cheap transformer 最先处理。
+
+如果你的构建工具开启了模块联邦，设置忽略 ```@libmedia``` 包下面的模块。如果一定要让 @libmedia 下的包启动模块联邦，需要显示设置包含下面的模块（这些模块可能在静态分析时无法被分析出来）
+```
+include: [
+  '@libmedia/cheap/heap',
+  '@libmedia/cheap/symbol',
+  '@libmedia/cheap/ctypeEnumRead',
+  '@libmedia/cheap/ctypeEnumWrite',
+  '@libmedia/cheap/thread/atomics'
+]
+```
+
 
 ## webpack 插件
 

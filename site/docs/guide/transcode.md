@@ -48,12 +48,17 @@ const CopyWebpackPlugin = require('copy-webpack-plugin')
 
 module.exports = (env) => {
   return {
+    resolve: {
+      alias: {
+       '@libmedia/avtranscoder': path.resolve(__dirname, 'node_modules/@libmedia/avtranscoder/dist/umd/avtranscoder.js')
+      }
+    },
     plugins: [
       new CopyWebpackPlugin({
         patterns: [
           {
             from: 'node_modules/@libmedia/avtranscoder/dist/esm/[0-9]*.avtranscoder.js',
-            to: './[name].[ext]'
+            to: './[name][ext]'
           }
         ],
       })
@@ -67,20 +72,40 @@ module.exports = (env) => {
 // vite 可以使用 vite-plugin-static-copy 插件
 // npm install vite-plugin-static-copy --save-dev
 import { viteStaticCopy } from 'vite-plugin-static-copy'
-export default defineConfig({
-  ...
-  plugins: [
-    viteStaticCopy({
-      targets: [
-        {
-          src: 'node_modules/@libmedia/avtranscoder/dist/esm/[0-9]*.avtranscoder.js',
-          dest: './',
-        },
-      ],
-    })
-  ],
+export default defineConfig((config) => {
+  {
+    ...
+    plugins: [
+      viteStaticCopy({
+        targets: [
+          {
+            src: 'node_modules/@libmedia/avtranscoder/dist/esm/[0-9]*.avtranscoder.js',
+            dest: config.command === 'serve' ? './node_modules/.vite/deps/' : './assets/',
+          },
+        ],
+      })
+    ],
+  }
 });
 ```
+
+```javascript [rsbuild]
+import { defineConfig } from "@rsbuild/core"
+
+export default defineConfig({
+  output: {
+    copy: [
+      { from: './node_modules/@libmedia/avtranscoder/dist/umd/[0-9]*.avtranscoder.js', to: 'static/js/[name][ext]' },
+    ],
+  },
+  resolve: {
+    alias: {
+      '@libmedia/avtranscoder': './node_modules/@libmedia/avtranscoder/dist/umd/avtranscoder.js',
+    },
+  },
+})
+```
+
 :::
 
 ## 使用

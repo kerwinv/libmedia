@@ -39,6 +39,7 @@ export interface ControllerObserver {
   onGetDecoderResource: (mediaType: AVMediaType, codecId: AVCodecID) => Promise<WebAssemblyResource | string | ArrayBuffer>
   isPictureInPicture: () => boolean
   isMediaStreamMode: () => boolean
+  onError: (error: Error) => void
 }
 
 export default class Controller {
@@ -129,17 +130,30 @@ export default class Controller {
           break
       }
     })
+    this.demuxerControlIPCPort.on(NOTIFY, async (request: RpcMessage) => {
+      switch (request.method) {
+        case 'demuxError':
+          this.observer.onError(new Error(`demux error, code: ${request.params.code}`))
+          break
+      }
+    })
 
-    if (!observer.isMediaStreamMode()) {
-      this.onVisibilityChange = (event: any) => {
-        this.visibilityHidden = document.visibilityState === 'hidden' && !this.observer.isPictureInPicture()
+    this.onVisibilityChange = (event: any) => {
+      this.visibilityHidden = document.visibilityState === 'hidden' && !this.observer.isPictureInPicture()
+      if (!observer.isMediaStreamMode()) {
         this.videoRenderControlIPCPort.notify('skipRender', {
           skipRender: this.visibilityHidden
         })
       }
-      this.visibilityHidden = document.visibilityState === 'hidden' && !this.observer.isPictureInPicture()
-      document.addEventListener('visibilitychange', this.onVisibilityChange)
+      this.muxerControlIPCPort.notify('visibilitychange', {
+        visibilityHidden: this.visibilityHidden
+      })
     }
+    this.visibilityHidden = document.visibilityState === 'hidden' && !this.observer.isPictureInPicture()
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
+    this.muxerControlIPCPort.notify('visibilitychange', {
+      visibilityHidden: this.visibilityHidden
+    })
   }
 
   public getVideoRenderControlPort() {

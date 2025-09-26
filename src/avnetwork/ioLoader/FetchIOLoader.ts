@@ -67,6 +67,10 @@ export default class FetchIOLoader extends IOLoader {
 
   private supportRange: boolean
 
+  private abortSleep_: Sleep
+
+  private aborted: boolean
+
   constructor(options: FetchIOLoaderOptions = {}) {
     super(options)
   }
@@ -133,7 +137,7 @@ export default class FetchIOLoader extends IOLoader {
     return 0
   }
 
-  public async open(info: FetchInfo, range: Range) {
+  public async open(info: FetchInfo, range: Range = { from: 0, to: -1 }) {
 
     this.info = info
     this.range = range
@@ -144,15 +148,17 @@ export default class FetchIOLoader extends IOLoader {
 
     this.range.from = Math.max(this.range.from, 0)
 
-    if (this.eofIndex < 0) {
-      this.eofIndex = range.to
-    }
-
     this.startBytes = 0
     this.endBytes = -1
+    this.eofIndex = -1
     this.receivedLength = 0
     this.buffers = []
     this.supportRange = true
+    this.aborted = false
+
+    if (this.range.to > 0) {
+      this.eofIndex = range.to
+    }
 
     if (this.range && !this.options.isLive) {
       this.startBytes = this.range.from ?? 0
@@ -238,8 +244,12 @@ export default class FetchIOLoader extends IOLoader {
         this.retryCount++
         this.status = IOLoaderStatus.CONNECTING
 
-        await new Sleep(this.options.retryInterval)
-
+        this.abortSleep_ = new Sleep(this.options.retryInterval)
+        await this.abortSleep_
+        this.abortSleep_ = null
+        if (this.aborted) {
+          return
+        }
         return this.openReader()
       }
       else {
@@ -275,12 +285,15 @@ export default class FetchIOLoader extends IOLoader {
 
     if (!this.reader) {
       await this.openReader()
+      if (this.aborted) {
+        return IOError.END
+      }
     }
 
     const { value, done } = await this.reader.read()
 
     if (done) {
-      if (this.contentLength !== null && (this.receivedLength + this.range.from) < this.endBytes + 1) {
+      if (this.contentLength !== undefined && (this.receivedLength + this.range.from) < this.endBytes + 1) {
         this.status = IOLoaderStatus.ERROR
         logger.fatal('Fetch stream meet Early-EOF')
       }
@@ -332,8 +345,12 @@ export default class FetchIOLoader extends IOLoader {
     if (!this.supportRange) {
       return errorType.OPERATE_NOT_SUPPORT
     }
+    if (this.eofIndex > 0 && Number(pos) > this.eofIndex) {
+      return errorType.INVALID_PARAMETERS
+    }
 
     await this.abort()
+    this.aborted = false
     this.receivedLength = Number(pos) - this.range.from
     this.startBytes = Number(pos)
     if (!this.options.disableSegment) {
@@ -354,7 +371,16 @@ export default class FetchIOLoader extends IOLoader {
     return static_cast<int64>(this.contentLength || 0)
   }
 
+  public abortSleep() {
+    this.aborted = true
+    if (this.abortSleep_) {
+      this.abortSleep_.stop()
+      this.abortSleep_ = null
+    }
+  }
+
   public async abort() {
+    this.abortSleep()
     if (!this.reader) {
       return
     }
@@ -367,8 +393,8 @@ export default class FetchIOLoader extends IOLoader {
   }
 
   public async stop() {
-    await this.abort()
     this.status = IOLoaderStatus.IDLE
+    await this.abort()
   }
 
   public getUrl() {

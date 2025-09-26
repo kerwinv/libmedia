@@ -4,16 +4,21 @@ import * as is from 'common/util/is'
 import * as array from 'common/util/array'
 import { hhColonDDColonSSDotMill2Int64 } from 'common/util/time'
 
+interface Span {
+  context: string | (string | { tagName: string, context?: string } )[]
+  region?: string
+  begin: string
+  end?: string
+  br?: string
+}
+
 interface P {
   begin: string
   end?: string
   dur?: string
   context: string | (string | { tagName: string, context?: string } )[]
   region?: string
-  span?: {
-    context: string | (string | { tagName: string, context?: string } )[]
-    region?: string
-  }
+  span?: Span | Span[]
 }
 
 export function parse(text: string) {
@@ -54,30 +59,66 @@ export function parse(text: string) {
   }
 
   function add(p: P, start: string, end: string) {
-    const pts = hhColonDDColonSSDotMill2Int64(start || p.begin)
+    let pts = hhColonDDColonSSDotMill2Int64(start || p.begin)
 
     let context = p.context || ''
     let region = p.region || 'Default'
+    let spanEnd = ''
 
     if (is.array(context)) {
       context = formatContext(context)
     }
-    if (p.span?.context) {
-      if (p.span.region) {
-        region = p.span.region
+    if (is.array(p.span)) {
+      array.each(p.span, (span) => {
+        if (span.context) {
+          if (pts === -1n && span.begin) {
+            pts = hhColonDDColonSSDotMill2Int64(span.begin)
+          }
+          if (!region && span.region) {
+            region = span.region
+          }
+          if (is.string(span.context)) {
+            context += span.context
+            if (span.br) {
+              context += '<br>'
+            }
+          }
+          else {
+            context += formatContext(span.context)
+            if (span.br) {
+              context += '<br>'
+            }
+          }
+        }
+        if (span.end) {
+          spanEnd = span.end
+        }
+      })
+    }
+    else if (p.span) {
+      if (p.span.context) {
+        if (pts === -1n && p.span.begin) {
+          pts = hhColonDDColonSSDotMill2Int64(p.span.begin)
+        }
+        if (!region && p.span.region) {
+          region = p.span.region
+        }
+        if (is.string(p.span.context)) {
+          context += p.span.context
+        }
+        else {
+          context += formatContext(p.span.context)
+        }
       }
-      if (is.string(p.span.context)) {
-        context += p.span.context
-      }
-      else {
-        context += formatContext(p.span.context)
+      if (p.span.end) {
+        spanEnd = p.span.end
       }
     }
     queue.push({
       context,
       pts,
       region: region,
-      duration: p.dur ? hhColonDDColonSSDotMill2Int64(p.dur) : (hhColonDDColonSSDotMill2Int64(end || p.end) - pts),
+      duration: p.dur ? hhColonDDColonSSDotMill2Int64(p.dur) : (hhColonDDColonSSDotMill2Int64(end || p.end || spanEnd) - pts)
     })
   }
 

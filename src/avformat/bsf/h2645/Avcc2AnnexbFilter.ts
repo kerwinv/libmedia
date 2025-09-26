@@ -25,7 +25,7 @@
 
 import AVPacket, { AVPacketFlags } from 'avutil/struct/avpacket'
 import AVBSFilter from '../AVBSFilter'
-import AVCodecParameters from 'avutil/struct/avcodecparameters'
+import AVCodecParameters, { AVCodecParameterFlags } from 'avutil/struct/avcodecparameters'
 import { Rational } from 'avutil/struct/rational'
 import { addAVPacketData, copyAVPacketProps, createAVPacket, destroyAVPacket,
   getAVPacketSideData,
@@ -39,16 +39,31 @@ import { AVCodecID, AVPacketSideDataType } from 'avutil/codec'
 import * as errorType from 'avutil/error'
 import { isAnnexb } from 'avutil/util/nalu'
 import * as logger from 'common/util/logger'
-import { mapSafeUint8Array } from 'cheap/std/memory'
+import { mapSafeUint8Array, mapUint8Array } from 'cheap/std/memory'
 
 export default class Avcc2AnnexbFilter extends AVBSFilter {
   private cache: pointer<AVPacket>
   private cached: boolean
+  private naluLengthSizeMinusOne: number
 
   public init(codecpar: pointer<AVCodecParameters>, timeBase: pointer<Rational>): number {
     super.init(codecpar, timeBase)
     this.cache = createAVPacket()
     this.cached = false
+    if (codecpar.extradata) {
+      const extradata = mapUint8Array(codecpar.extradata, reinterpret_cast<size>(codecpar.extradataSize))
+      if (!isAnnexb(extradata)) {
+        if (codecpar.codecId === AVCodecID.AV_CODEC_ID_H264) {
+          this.naluLengthSizeMinusOne = extradata[4] & 0x03
+        }
+        else if (codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC) {
+          this.naluLengthSizeMinusOne = extradata[21] & 0x03
+        }
+        else if (codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC) {
+          this.naluLengthSizeMinusOne = (extradata[0] >>> 1) & 0x03
+        }
+      }
+    }
     return 0
   }
 
@@ -59,9 +74,7 @@ export default class Avcc2AnnexbFilter extends AVBSFilter {
   }
 
   public sendAVPacket(avpacket: pointer<AVPacket>): number {
-    const buffer = mapSafeUint8Array(avpacket.data, reinterpret_cast<size>(avpacket.size))
-
-    if (avpacket.bitFormat === h264.BitFormat.ANNEXB) {
+    if (avpacket.flags & AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB) {
       refAVPacket(this.cache, avpacket)
     }
     else {
@@ -77,22 +90,36 @@ export default class Avcc2AnnexbFilter extends AVBSFilter {
       let extradata = null
       if (element) {
         extradata = mapSafeUint8Array(element.data, element.size)
+
+        if (!isAnnexb(extradata)) {
+          if (this.inCodecpar.codecId === AVCodecID.AV_CODEC_ID_H264) {
+            this.naluLengthSizeMinusOne = extradata[4] & 0x03
+          }
+          else if (this.inCodecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC) {
+            this.naluLengthSizeMinusOne = extradata[21] & 0x03
+          }
+          else if (this.inCodecpar.codecId === AVCodecID.AV_CODEC_ID_VVC) {
+            this.naluLengthSizeMinusOne = (extradata[0] >>> 1) & 0x03
+          }
+        }
       }
 
+      const buffer = mapSafeUint8Array(avpacket.data, reinterpret_cast<size>(avpacket.size))
+
       if (this.inCodecpar.codecId === AVCodecID.AV_CODEC_ID_H264) {
-        convert = h264.avcc2Annexb(buffer, extradata)
+        convert = h264.avcc2Annexb(buffer, extradata, this.naluLengthSizeMinusOne)
       }
       else if (this.inCodecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC) {
-        convert = hevc.avcc2Annexb(buffer, extradata)
+        convert = hevc.avcc2Annexb(buffer, extradata, this.naluLengthSizeMinusOne)
       }
       else if (this.inCodecpar.codecId === AVCodecID.AV_CODEC_ID_VVC) {
-        convert = vvc.avcc2Annexb(buffer, extradata)
+        convert = vvc.avcc2Annexb(buffer, extradata, this.naluLengthSizeMinusOne)
       }
       else {
         logger.fatal(`not support for codecId: ${this.inCodecpar.codecId}`)
       }
 
-      this.cache.bitFormat = h264.BitFormat.ANNEXB
+      this.cache.flags |= AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB
 
       addAVPacketData(this.cache, convert.bufferPointer, convert.length)
 

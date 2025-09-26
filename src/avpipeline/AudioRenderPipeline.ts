@@ -65,6 +65,7 @@ export interface AudioRenderTaskOptions extends TaskOptions {
   avframeListMutex: pointer<Mutex>
   enableJitterBuffer: boolean
   isLive: boolean
+  audioMasterForce: boolean
 }
 
 type SelfTask = AudioRenderTaskOptions & {
@@ -515,7 +516,7 @@ export default class AudioRenderPipeline extends Pipeline {
 
           const diff = task.currentPTS - task.masterTimer.getMasterTime()
 
-          if (diff > MASTER_SYNC_THRESHOLD) {
+          if (diff > MASTER_SYNC_THRESHOLD && !task.audioMasterForce) {
             memset(pcmBuffer.data[0], 0, pcmBuffer.maxnbSamples * reinterpret_cast<int32>(sizeof(float)) * pcmBuffer.channels)
             rightIPCPort.reply(request, 0)
             this.fakeSyncPts(task)
@@ -572,7 +573,7 @@ export default class AudioRenderPipeline extends Pipeline {
 
           const diff = task.currentPTS - task.masterTimer.getMasterTime()
 
-          if (diff > MASTER_SYNC_THRESHOLD) {
+          if (diff > MASTER_SYNC_THRESHOLD && !task.audioMasterForce) {
             const pcm = new Uint8Array(task.outPCMBuffer.nbSamples * reinterpret_cast<int32>(sizeof(float)) * task.playChannels)
             rightIPCPort.reply(request, pcm.buffer, null, [pcm.buffer])
             this.fakeSyncPts(task)
@@ -908,7 +909,6 @@ export default class AudioRenderPipeline extends Pipeline {
     else if (task.isLive && (pts - task.currentPTS > 4000n)) {
       task.masterTimer.setMasterTime(pts)
     }
-    task.currentPTS = pts
 
     const diffPts = task.currentPTS - task.masterTimer.getMasterTime()
     if (diffPts > MASTER_SYNC_THRESHOLD) {
@@ -934,6 +934,18 @@ export default class AudioRenderPipeline extends Pipeline {
     task.fakePlaySamples += static_cast<int64>(audioFrame.nbSamples)
 
     task.avframePool.release(audioFrame)
+    task.currentPTS = pts
+    task.stats.audioFrameDropCount++
+    task.stats.audioNextTime = pts
+
+    if (task.lastRenderTimestamp) {
+      task.stats.audioFrameRenderIntervalMax = Math.max(
+        getTimestamp() - task.lastRenderTimestamp,
+        task.stats.audioFrameRenderIntervalMax
+      )
+    }
+    task.lastRenderTimestamp = getTimestamp()
+
     if (task.currentPTS - task.lastNotifyPTS >= 1000n) {
       task.lastNotifyPTS = task.currentPTS
       task.stats.audioCurrentTime = task.currentPTS
@@ -1050,7 +1062,12 @@ export default class AudioRenderPipeline extends Pipeline {
         task.rightIPCPort.destroy()
         task.rightIPCPort = null
       }
+      if (task.controlIPCPort) {
+        task.controlIPCPort.destroy()
+        task.controlIPCPort = null
+      }
       this.tasks.delete(taskId)
+      logger.debug(`unregisterTask task, taskId: ${taskId}`)
     }
   }
 

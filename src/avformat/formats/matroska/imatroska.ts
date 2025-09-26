@@ -632,7 +632,8 @@ export const EbmlSyntaxTag: Partial<Record<EBMLId, EbmlSyntax<Tag>>> = {
   [EBMLId.TAG_SIMPLE]: {
     type: EbmlType.OBJECT,
     filedName: 'tag',
-    child: EbmlSyntaxSimpleTag
+    child: EbmlSyntaxSimpleTag,
+    isArray: true
   },
   [EBMLId.TAG_TARGETS]: {
     type: EbmlType.OBJECT,
@@ -985,6 +986,9 @@ export async function parseEbmlSyntax<T extends Record<string, any>>(
           break
         case EbmlType.STRING:
           value = await formatContext.ioReader.readString(static_cast<int32>(length))
+          if (value && (value as string).charCodeAt(value.length - 1) === 0) {
+            value = (value as string).substring(0, value.length - 1)
+          }
           break
         case EbmlType.BOOL:
           value = !!(await readUint(formatContext, length))

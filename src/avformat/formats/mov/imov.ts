@@ -23,8 +23,8 @@
  *
  */
 
-import Stream from 'avutil/AVStream'
-import { Atom, FragmentTrack, MOVContext, MOVStreamContext } from './type'
+import AVStream, { AVStreamMetadataKey } from 'avutil/AVStream'
+import { Atom, FragmentTrack, MOVContext, MOVStreamContext, Sample } from './type'
 import IOReader from 'common/io/IOReader'
 import mktag from '../../function/mktag'
 import { BoxType, ContainerBoxs } from './boxType'
@@ -39,6 +39,11 @@ import { AVPacketSideDataType } from 'avutil/codec'
 import { avFree, avMalloc } from 'avutil/util/mem'
 import { memcpyFromUint8Array } from 'cheap/std/memory'
 import { NOPTS_VALUE } from 'avutil/constant'
+import { encryptionInitInfo2SideData } from 'avutil/util/encryption'
+import { addSideData } from 'avutil/util/avpacket'
+import digital2Tag from '../../function/digital2Tag'
+import { iTunesKeyMap } from './iTunes'
+import { readITunesTagValue } from './parsing/meta'
 
 
 export async function readFtyp(ioReader: IOReader, context: MOVContext, atom: Atom) {
@@ -59,7 +64,7 @@ export async function readFtyp(ioReader: IOReader, context: MOVContext, atom: At
 
 async function parseOneBox(
   ioReader: IOReader,
-  stream: Stream,
+  stream: AVStream,
   atom: Atom,
   movContext: MOVContext
 ) {
@@ -182,6 +187,35 @@ async function parseOneBox(
         movContext
       )
     }
+    else if (type === mktag('name') && atom.type === mktag(BoxType.UDTA) && (size - 8) > 0) {
+      const title = await ioReader.readString(size - 8)
+      if (stream) {
+        stream.metadata[AVStreamMetadataKey.TITLE] = title
+      }
+      else {
+        if (!movContext.metadata) {
+          movContext.metadata = {}
+        }
+        movContext.metadata[AVStreamMetadataKey.TITLE] = title
+      }
+    }
+    else if (atom.type === mktag(BoxType.UDTA)
+      && iTunesKeyMap[digital2Tag(type)]
+      && (size - 8) > 0
+    ) {
+      const data = await readITunesTagValue(ioReader, size - 8)
+      if (data.length) {
+        if (stream) {
+          stream.metadata[iTunesKeyMap[digital2Tag(type)]] = data.length === 1 ? data[0] : data
+        }
+        else {
+          if (!movContext.metadata) {
+            movContext.metadata = {}
+          }
+          movContext.metadata[iTunesKeyMap[digital2Tag(type)]] = data.length === 1 ? data[0] : data
+        }
+      }
+    }
     else {
       await ioReader.skip(size - 8)
     }
@@ -194,6 +228,8 @@ export async function readMoov(
   movContext: MOVContext,
   atom: Atom
 ) {
+  movContext.parseOneBox = parseOneBox
+  movContext.parsers = parsers
   const endPos = ioReader.getPos() + static_cast<int64>(atom.size)
   while (ioReader.getPos() < endPos) {
     const size = await ioReader.readUint32()
@@ -285,10 +321,54 @@ export async function readMoov(
         movContext
       )
     }
+    else if (ContainerBoxs.some((boxType) => {
+      return mktag(boxType) === type
+    })) {
+      await parseOneBox(
+        ioReader,
+        null,
+        {
+          type,
+          size: size - 8
+        },
+        movContext
+      )
+    }
     else {
       await ioReader.skip(size - 8)
     }
   }
+  formatContext.streams.forEach((stream) => {
+    if (movContext.encryptionInitInfos) {
+      const sideData = encryptionInitInfo2SideData(movContext.encryptionInitInfos)
+      const data: pointer<uint8> = avMalloc(sideData.length)
+      memcpyFromUint8Array(data, sideData.length, sideData)
+      addSideData(
+        addressof(stream.codecpar.codedSideData),
+        addressof(stream.codecpar.nbCodedSideData),
+        AVPacketSideDataType.AV_PKT_DATA_ENCRYPTION_INIT_INFO,
+        data,
+        sideData.length
+      )
+    }
+    if (movContext.cencs) {
+      const streamContext = stream.privData as MOVStreamContext
+      const cenc = movContext.cencs[streamContext.trackId]
+      if (cenc) {
+        stream.metadata[AVStreamMetadataKey.ENCRYPTION] = {
+          schemeType: cenc.schemeType,
+          schemeVersion: cenc.schemeVersion,
+          cryptByteBlock: cenc.cryptByteBlock,
+          skipByteBlock: cenc.skipByteBlock,
+          perSampleIVSize: cenc.defaultPerSampleIVSize,
+          kid: cenc.defaultKeyId,
+          constantIV: cenc.defaultConstantIV,
+          pattern: cenc.pattern
+        }
+      }
+    }
+  })
+
 }
 
 export async function readMoof(
@@ -342,7 +422,7 @@ export async function readMoof(
       if (stream) {
         const streamContext = stream.privData as MOVStreamContext
         track.streamIndex = stream.index
-        buildFragmentIndex(stream, track, movContext, formatContext.ioReader.flags)
+        buildFragmentIndex(stream, track, movContext, formatContext.ioReader.getPos(), formatContext.ioReader.flags)
         streamContext.currentSample = 0
         streamContext.sampleEnd = false
       }
@@ -360,6 +440,20 @@ export async function readMfra(
   atom: Atom
 ) {
   const endPos = ioReader.getPos() + static_cast<int64>(atom.size)
+  const samplesIndexMap: Record<number, {
+    samples: Sample[]
+    currentSample: number
+    sampleEnd: boolean
+  }> = {}
+  formatContext.streams.forEach((stream) => {
+    const context = stream.privData as MOVStreamContext
+    samplesIndexMap[stream.index] = {
+      samples: context.samplesIndex,
+      currentSample: context.currentSample,
+      sampleEnd: context.sampleEnd
+    }
+    context.samplesIndex = []
+  })
   while (ioReader.getPos() < endPos) {
     const pos = ioReader.getPos()
     const size = await ioReader.readUint32()
@@ -435,4 +529,10 @@ export async function readMfra(
     await ioReader.seek(pos + static_cast<int64>(size), false, false)
   }
   movContext.currentFragment = null
+  formatContext.streams.forEach((stream) => {
+    const context = stream.privData as MOVStreamContext
+    context.samplesIndex = samplesIndexMap[stream.index]?.samples ?? []
+    context.currentSample = samplesIndexMap[stream.index]?.currentSample ?? 0
+    context.sampleEnd = samplesIndexMap[stream.index]?.sampleEnd ?? false
+  })
 }

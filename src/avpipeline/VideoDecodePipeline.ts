@@ -69,6 +69,7 @@ export interface VideoDecodeTaskOptions extends TaskOptions {
   avframeList: pointer<List<pointer<AVFrameRef>>>
   avframeListMutex: pointer<Mutex>
   preferWebCodecs?: boolean
+  preferLatency?: boolean
 }
 
 type SelfTask = Omit<VideoDecodeTaskOptions, 'resource'> & {
@@ -129,13 +130,26 @@ export default class VideoDecodePipeline extends Pipeline {
             task.hardwareDecoder.close()
             task.hardwareDecoder = null
             task.decoderFallbackReady = this.openSoftwareDecoder(task)
-            logger.warn(`video decode error width hardware(${task.hardwareRetryCount}), taskId: ${task.taskId}, error: ${error}, try to fallback to software decoder`)
+            logger.warn(`video decode error by hardware decoder(${task.hardwareRetryCount}), taskId: ${task.taskId}, error: ${error}, try to fallback to software decoder`)
+          }
+          else if (task.targetDecoder === task.softwareDecoder) {
+            task.softwareDecoder.close()
+            task.softwareDecoder = this.createWasmcodecDecoder(task, task.resource)
+            task.softwareDecoderOpened = false
+            task.decoderFallbackReady = this.openSoftwareDecoder(task)
+            logger.warn(`video decode error by software(webcodecs) decoder(${task.hardwareRetryCount}), taskId: ${task.taskId}, error: ${error}, try to fallback to software(wasm) decoder`)
           }
         }
         else {
           task.hardwareRetryCount++
-          logger.info(`retry open hardware decoder(${task.hardwareRetryCount}), taskId: ${task.taskId}`)
-          task.decoderFallbackReady = task.hardwareDecoder.open(task.parameters)
+          if (task.targetDecoder === task.hardwareDecoder) {
+            logger.info(`retry open hardware decoder(${task.hardwareRetryCount}), taskId: ${task.taskId}`)
+            task.decoderFallbackReady = task.hardwareDecoder.open(task.parameters)
+          }
+          else if (task.targetDecoder === task.softwareDecoder) {
+            logger.info(`retry open software(webcodecs) decoder(${task.hardwareRetryCount}), taskId: ${task.taskId}`)
+            task.decoderFallbackReady = task.softwareDecoder.open(task.parameters)
+          }
         }
         task.needKeyFrame = true
         task.leftIPCPort.request('requestKeyframe')
@@ -152,7 +166,8 @@ export default class VideoDecodePipeline extends Pipeline {
           task.lastDecodeTimestamp = NOPTS_VALUE
         }
       },
-      enableHardwareAcceleration
+      enableHardwareAcceleration,
+      optimizeForLatency: task.preferLatency
     })
   }
 
@@ -262,7 +277,7 @@ export default class VideoDecodePipeline extends Pipeline {
                     task.targetDecoder = task.softwareDecoder
                     task.hardwareDecoder.close()
                     task.hardwareDecoder = null
-                    logger.warn(`video decode error width hardware(${task.hardwareRetryCount}), taskId: ${task.taskId}, error: ${ret}, try to fallback to software decoder`)
+                    logger.warn(`video decode error by hardware decoder(${task.hardwareRetryCount}), taskId: ${task.taskId}, error: ${ret}, try to fallback to software decoder`)
                     ret = await this.openSoftwareDecoder(task)
                   }
                   if (ret) {
@@ -311,6 +326,7 @@ export default class VideoDecodePipeline extends Pipeline {
               else if (avpacket > 0) {
                 if (task.needKeyFrame) {
                   if ((avpacket.flags & AVPacketFlags.AV_PKT_FLAG_KEY)
+                      // h264 强制判断 nalu type 某些码流封装层的关键帧标志是错误的 
                       && task.parameters.codecId !== AVCodecID.AV_CODEC_ID_H264
                     || task.parameters.codecId === AVCodecID.AV_CODEC_ID_H264
                       && h264.isIDR(
@@ -404,7 +420,7 @@ export default class VideoDecodePipeline extends Pipeline {
                       // webcodecs 软解失败，回退到 wasm 软解
                       if ((task.targetDecoder instanceof WebVideoDecoder) && task.resource) {
 
-                        logger.warn(`video decode error width webcodecs soft decoder, taskId: ${task.taskId}, error: ${ret}, try to fallback to wasm software decoder`)
+                        logger.warn(`video decode error by webcodecs soft decoder, taskId: ${task.taskId}, error: ${ret}, try to fallback to wasm software decoder`)
 
                         task.softwareDecoder.close()
                         task.softwareDecoder = this.createWasmcodecDecoder(task, task.resource)
@@ -518,6 +534,8 @@ export default class VideoDecodePipeline extends Pipeline {
         }
         threadCount = Math.min(threadCount, navigator.hardwareConcurrency)
       }
+
+      logger.debug(`open software(${task.softwareDecoder instanceof WebVideoDecoder ? 'webcodecs' : 'wasm'}) decoder`)
 
       let ret = await task.softwareDecoder.open(parameters, threadCount, task.wasmDecoderOptions)
       if (ret) {
@@ -664,9 +682,10 @@ export default class VideoDecodePipeline extends Pipeline {
 
       return new Promise<number>(async (resolve, reject) => {
         if (task.hardwareDecoder) {
+          logger.debug('open hardware decoder')
           const ret = await task.hardwareDecoder.open(codecpar)
           if (ret) {
-            logger.error(`cannot open hardware decoder, ${ret}`)
+            logger.warn(`cannot open hardware decoder, ${ret}, try to open software decoder`)
             task.hardwareDecoder.close()
             task.hardwareDecoder = null
             task.targetDecoder = task.softwareDecoder
@@ -833,6 +852,7 @@ export default class VideoDecodePipeline extends Pipeline {
         freeCodecParameters(task.parameters)
       }
       this.tasks.delete(taskId)
+      logger.debug(`unregisterTask task, taskId: ${taskId}`)
     }
   }
 

@@ -32,10 +32,12 @@ import { getAVPacketSideData } from 'avutil/util/avpacket'
 import avpacket2EncodedAudioChunk from 'avutil/function/avpacket2EncodedAudioChunk'
 import * as logger from 'common/util/logger'
 import * as errorType from 'avutil/error'
+import * as array from 'common/util/array'
 
 export type WebAudioDecoderOptions = {
   onReceiveAudioData: (frame: AudioData) => void
   onError: (error?: Error) => void
+  codec?: string
 }
 
 export default class WebAudioDecoder {
@@ -76,7 +78,7 @@ export default class WebAudioDecoder {
     }
 
     const config: AudioDecoderConfig = {
-      codec: getAudioCodec(this.parameters),
+      codec: this.options.codec ?? getAudioCodec(this.parameters),
       sampleRate: parameters.sampleRate,
       numberOfChannels: parameters.chLayout.nbChannels,
       description: this.extradata
@@ -119,17 +121,8 @@ export default class WebAudioDecoder {
   }
 
   public changeExtraData(buffer: Uint8Array) {
-    if (buffer.length === this.extradata!.length) {
-      let same = true
-      for (let i = 0; i < buffer.length; i++) {
-        if (buffer[i] !== this.extradata![i]) {
-          same = false
-          break
-        }
-      }
-      if (same) {
-        return 0
-      }
+    if (array.same(buffer, this.extradata!)) {
+      return 0
     }
 
     this.currentError = null
@@ -138,7 +131,7 @@ export default class WebAudioDecoder {
 
     this.decoder!.reset()
     this.decoder!.configure({
-      codec: getAudioCodec(this.parameters),
+      codec: this.options.codec ?? getAudioCodec(this.parameters),
       sampleRate: this.parameters.sampleRate,
       numberOfChannels: this.parameters.chLayout.nbChannels,
       description: this.extradata

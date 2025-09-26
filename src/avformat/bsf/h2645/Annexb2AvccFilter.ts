@@ -37,7 +37,6 @@ import * as vvc from 'avutil/codecs/vvc'
 import { mapSafeUint8Array, memcpyFromUint8Array } from 'cheap/std/memory'
 import { AVCodecID, AVPacketSideDataType } from 'avutil/codec'
 import * as errorType from 'avutil/error'
-import { isAnnexb } from 'avutil/util/nalu'
 import { avMalloc } from 'avutil/util/mem'
 import * as logger from 'common/util/logger'
 
@@ -45,6 +44,12 @@ export default class Annexb2AvccFilter extends AVBSFilter {
 
   private cache: pointer<AVPacket>
   private cached: boolean
+  private reverseSps: boolean
+
+  constructor(reverseSps: boolean = false) {
+    super()
+    this.reverseSps = reverseSps
+  }
 
   public init(codecpar: pointer<AVCodecParameters>, timeBase: pointer<Rational>): number {
     super.init(codecpar, timeBase)
@@ -62,9 +67,7 @@ export default class Annexb2AvccFilter extends AVBSFilter {
 
   public sendAVPacket(avpacket: pointer<AVPacket>): number {
 
-    const buffer = mapSafeUint8Array(avpacket.data, reinterpret_cast<size>(avpacket.size))
-
-    if (avpacket.bitFormat === h264.BitFormat.AVCC) {
+    if (!(avpacket.flags & AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB)) {
       refAVPacket(this.cache, avpacket)
     }
     else {
@@ -78,20 +81,22 @@ export default class Annexb2AvccFilter extends AVBSFilter {
         key: boolean
       }
 
+      const buffer = mapSafeUint8Array(avpacket.data, reinterpret_cast<size>(avpacket.size))
+
       if (this.inCodecpar.codecId === AVCodecID.AV_CODEC_ID_H264) {
-        convert = h264.annexb2Avcc(buffer)
+        convert = h264.annexb2Avcc(buffer, this.reverseSps)
       }
       else if (this.inCodecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC) {
-        convert = hevc.annexb2Avcc(buffer)
+        convert = hevc.annexb2Avcc(buffer, this.reverseSps)
       }
       else if (this.inCodecpar.codecId === AVCodecID.AV_CODEC_ID_VVC) {
-        convert = vvc.annexb2Avcc(buffer)
+        convert = vvc.annexb2Avcc(buffer, this.reverseSps)
       }
       else {
         logger.fatal(`not support for codecId: ${this.inCodecpar.codecId}`)
       }
 
-      this.cache.bitFormat = h264.BitFormat.AVCC
+      this.cache.flags &= ~AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB
 
       addAVPacketData(this.cache, convert.bufferPointer, convert.length)
 

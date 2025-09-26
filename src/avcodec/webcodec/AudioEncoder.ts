@@ -43,6 +43,9 @@ export type WebAudioEncoderOptions = {
   onError: (error?: Error) => void
   avpacketPool?: AVPacketPool
   avframePool?: AVFramePool
+  bitrateMode?: BitrateMode
+  opus?: OpusEncoderConfig
+  copyTs?: boolean
 }
 
 export default class WebAudioEncoder {
@@ -90,7 +93,7 @@ export default class WebAudioEncoder {
     }
 
     let pts = this.ptsQueue.shift()
-    if (pts === undefined || pts === NOPTS_VALUE_BIGINT) {
+    if (pts === undefined || pts === NOPTS_VALUE_BIGINT || !this.options.copyTs) {
       pts = this.pts
     }
     avpacket.pts = pts
@@ -124,7 +127,10 @@ export default class WebAudioEncoder {
       sampleRate: parameters.sampleRate,
       numberOfChannels: parameters.chLayout.nbChannels,
       bitrate: static_cast<double>(parameters.bitrate),
-      bitrateMode: 'constant'
+      bitrateMode: this.options.bitrateMode ?? 'constant'
+    }
+    if (this.options.opus) {
+      config.opus = this.options.opus
     }
 
     try {

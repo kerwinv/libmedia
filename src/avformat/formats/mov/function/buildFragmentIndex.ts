@@ -30,15 +30,12 @@ import { AVPacketFlags } from 'avutil/struct/avpacket'
 import { IOFlags } from 'avutil/avformat'
 
 
-export function buildFragmentIndex(stream: Stream, track: FragmentTrack, movContext: MOVContext, ioFlag: int32 = 0) {
+export function buildFragmentIndex(stream: Stream, track: FragmentTrack, movContext: MOVContext, pos: int64, ioFlag: int32 = 0) {
   const context = stream.privData as MOVStreamContext
 
-  const trex = movContext.trexs.find((trex) => {
-    return trex.trackId === track.trackId
-  })
-
   let currentOffset = track.baseDataOffset + static_cast<int64>(track.dataOffset)
-  if (track.baseIsMoof) {
+  // 不是 baseIsMoof 但 currentOffset 小于当前的 pos，说明 baseIsMoof 可能错误，这里纠正一下
+  if (track.baseIsMoof || currentOffset < pos) {
     currentOffset += movContext.currentFragment.pos
   }
   let currentDts = track.baseMediaDecodeTime
@@ -47,31 +44,22 @@ export function buildFragmentIndex(stream: Stream, track: FragmentTrack, movCont
   const sampleDurations = track.sampleDurations
   const sampleFlags = track.sampleFlags
   const sampleCompositionTimeOffset = track.sampleCompositionTimeOffset
-
-  if (!sampleSizes.length) {
-    for (let i = 0; i < track.sampleCount; i++) {
-      sampleSizes.push(track.defaultSampleSize || trex.size)
-    }
-  }
-  if (!sampleDurations.length) {
-    for (let i = 0; i < track.sampleCount; i++) {
-      sampleDurations.push(track.defaultSampleDuration || trex.duration)
-    }
-  }
-  if (!sampleFlags.length) {
-    for (let i = 0; i < track.sampleCount; i++) {
-      sampleFlags.push(track.defaultSampleFlags || trex.flags)
-    }
-  }
-  if (!sampleCompositionTimeOffset.length) {
-    for (let i = 0; i < track.sampleCount; i++) {
-      sampleCompositionTimeOffset.push(0)
-    }
-  }
+  const remainDataOffsets = track.remainDataOffsets
+  const remainDataOffsetIndex = track.remainDataOffsetIndex
+  let remainDataOffsetPointer = 0
 
   const samplesIndex: Sample[] = []
 
   for (let i = 0; i < track.sampleCount; i++) {
+
+    if (remainDataOffsetIndex[remainDataOffsetPointer] === i) {
+      currentOffset = track.baseDataOffset + static_cast<int64>(remainDataOffsets[remainDataOffsetPointer])
+      if (track.baseIsMoof) {
+        currentOffset += movContext.currentFragment.pos
+      }
+      remainDataOffsetPointer++
+    }
+
     const sample: Sample = {
       dts: currentDts,
       pts: currentDts + static_cast<int64>(sampleCompositionTimeOffset[i]),
@@ -86,10 +74,6 @@ export function buildFragmentIndex(stream: Stream, track: FragmentTrack, movCont
 
     let currentFlags = sampleFlags[i]
 
-    if (i === 0 && track.firstSampleFlags) {
-      currentFlags = track.firstSampleFlags
-    }
-
     if (!(currentFlags & (SampleFlags.IS_NON_SYN | SampleFlags.DEPENDS_YES))) {
       sample.flags |= AVPacketFlags.AV_PKT_FLAG_KEY
     }
@@ -103,4 +87,20 @@ export function buildFragmentIndex(stream: Stream, track: FragmentTrack, movCont
   }
 
   context.samplesIndex = samplesIndex
+
+  const cenc = movContext.cencs ? movContext.cencs[context.trackId] : null
+  if (cenc && track.cenc) {
+    if (track.cenc.sampleEncryption) {
+      context.samplesEncryption = track.cenc.sampleEncryption.map((item) => {
+        return {
+          scheme: cenc.schemeType,
+          keyId: cenc.defaultKeyId,
+          skipByteBlock: cenc.skipByteBlock,
+          cryptByteBlock: cenc.cryptByteBlock,
+          iv: item.iv,
+          subsamples: item.subsamples
+        }
+      })
+    }
+  }
 }

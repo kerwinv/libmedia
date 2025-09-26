@@ -30,7 +30,7 @@ import * as logger from 'common/util/logger'
 import { IOError } from 'common/io/error'
 import * as errorType from 'avutil/error'
 import IFormat from './IFormat'
-import { AVFormat } from 'avutil/avformat'
+import { AVFormat, AVSeekFlags } from 'avutil/avformat'
 import { mapSafeUint8Array } from 'cheap/std/memory'
 import { avMalloc } from 'avutil/util/mem'
 import { addAVPacketData } from 'avutil/util/avpacket'
@@ -39,7 +39,8 @@ import { NOPTS_VALUE_BIGINT } from 'avutil/constant'
 
 export const enum IVFCodec {
   VP8 = 'VP80',
-  VP9 = 'VP90'
+  VP9 = 'VP90',
+  AV1 = 'AV01'
 }
 
 const IVFCodec2CodecId = {
@@ -169,7 +170,9 @@ export default class IIVFFormat extends IFormat {
       return 0
     }
     catch (error) {
-      if (formatContext.ioReader.error !== IOError.END) {
+      if (formatContext.ioReader.error !== IOError.END
+        && formatContext.ioReader.error !== IOError.ABORT
+      ) {
         logger.error(`read packet error, ${error}`)
         return errorType.DATA_INVALID
       }
@@ -178,6 +181,14 @@ export default class IIVFFormat extends IFormat {
   }
 
   public async seek(formatContext: AVIFormatContext, stream: AVStream, timestamp: int64, flags: int32): Promise<int64> {
+
+    const now = formatContext.ioReader.getPos()
+
+    if (flags & AVSeekFlags.BYTE) {
+      await formatContext.ioReader.seek(timestamp)
+      return now
+    }
+
     return static_cast<int64>(errorType.FORMAT_NOT_SUPPORT)
   }
 

@@ -23,6 +23,7 @@
  *
  */
 
+import { NOPTS_VALUE_BIGINT } from 'avutil/constant'
 import { FragmentTrack } from '../type'
 
 export default function createFragmentTrack(): FragmentTrack {
@@ -35,6 +36,8 @@ export default function createFragmentTrack(): FragmentTrack {
     baseMediaDecodeTime: 0n,
     sampleCount: 0,
     dataOffset: 0,
+    remainDataOffsets: [],
+    remainDataOffsetIndex: [],
     dataOffsetPos: 0n,
     firstSampleFlags: 0,
     sampleDurations: [],
@@ -43,6 +46,9 @@ export default function createFragmentTrack(): FragmentTrack {
     sampleCompositionTimeOffset: [],
     baseIsMoof: false,
     ioWriter: null,
-    buffers: []
+    buffers: [],
+    lastFragIndexDts: 0n,
+    tfdtDelay: NOPTS_VALUE_BIGINT,
+    trunPtsDelay: 0n
   }
 }

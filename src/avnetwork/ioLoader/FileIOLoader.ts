@@ -30,7 +30,7 @@ import * as is from 'common/util/is'
 import { Range } from 'common/types/type'
 
 export interface FileInfo {
-  file: File
+  file: Blob
 }
 
 // chrome 目前使用 arrayBuffer 读文件数据会造成内存泄漏，先关闭
@@ -50,7 +50,7 @@ export default class FileIOLoader extends IOLoader {
   private reader: FileReader | FileReaderSync
   private readerResolve: (buffer: ArrayBuffer) => void
 
-  public async open(info: FileInfo, range: Range) {
+  public async open(info: FileInfo, range: Range = { from: 0, to: -1 }) {
 
     this.info = info
     this.range = range

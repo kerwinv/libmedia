@@ -1,6 +1,6 @@
 {
   "name": "@libmedia/avformat",
-  "version": "0.7.0",
+  "version": "0.11.0",
   "description": "libmedia avformat",
   "repository": {
     "type": "git",
@@ -167,6 +167,11 @@
       "require": "./dist/cjs/formats/IMpegtsFormat.js",
       "types": "./dist/esm/formats/IMpegtsFormat.d.ts"
     },
+    "./formats/IAviFormat": {
+      "import": "./dist/esm/formats/IAviFormat.js",
+      "require": "./dist/cjs/formats/IAviFormat.js",
+      "types": "./dist/esm/formats/IAviFormat.d.ts"
+    },
     "./formats/IOggFormat": {
       "import": "./dist/esm/formats/IOggFormat.js",
       "require": "./dist/cjs/formats/IOggFormat.js",
@@ -241,6 +246,21 @@
       "import": "./dist/esm/formats/OOggFormat.js",
       "require": "./dist/cjs/formats/OOggFormat.js",
       "types": "./dist/esm/formats/OOggFormat.d.ts"
+    },
+    "./formats/OWavFormat": {
+      "import": "./dist/esm/formats/OWavFormat.js",
+      "require": "./dist/cjs/formats/OWavFormat.js",
+      "types": "./dist/esm/formats/OWavFormat.d.ts"
+    },
+    "./formats/flv/FlvHeader": {
+      "import": "./dist/esm/formats/flv/FlvHeader.js",
+      "require": "./dist/cjs/formats/flv/FlvHeader.js",
+      "types": "./dist/esm/formats/flv/FlvHeader.d.ts"
+    },
+    "./formats/flv/FlvScriptTag": {
+      "import": "./dist/esm/formats/flv/FlvScriptTag.js",
+      "require": "./dist/cjs/formats/flv/FlvScriptTag.js",
+      "types": "./dist/esm/formats/flv/FlvScriptTag.d.ts"
     }
   }
 }

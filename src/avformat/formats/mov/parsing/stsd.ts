@@ -28,7 +28,7 @@ import Stream from 'avutil/AVStream'
 import { Atom, MOVContext, MOVStreamContext } from '../type'
 import * as logger from 'common/util/logger'
 import mktag from '../../../function/mktag'
-import { BoxType } from '../boxType'
+import { BoxType, ContainerBoxs } from '../boxType'
 import { AVCodecID, AVMediaType } from 'avutil/codec'
 import { tag2CodecId } from '../mov'
 
@@ -42,6 +42,7 @@ import wave from './wave'
 import dfla from './dfla'
 import dops from './dops'
 import colr from './colr'
+import pcmc from './pcmc'
 
 import ac3 from './dac3'
 import eac3 from './dec3'
@@ -67,6 +68,8 @@ export default async function read(ioReader: IOReader, stream: Stream, atom: Ato
     if (tag2CodecId[type]) {
       stream.codecpar.codecId = tag2CodecId[type]
     }
+
+    streamContext.format = type
 
     if (size === 0) {
       logger.warn('stsd entry invalid box size 0, skip')
@@ -225,7 +228,33 @@ export default async function read(ioReader: IOReader, stream: Stream, atom: Ato
           )
         }
         else {
-          await ioReader.skip(Math.min(size - 8, Number(endPos - ioReader.getPos())))
+          if (movContext.parsers && movContext.parsers[type]) {
+            await movContext.parsers[type](
+              ioReader,
+              null,
+              {
+                type,
+                size: size - 8
+              },
+              movContext
+            )
+          }
+          else if (movContext.parseOneBox && ContainerBoxs.some((boxType) => {
+            return mktag(boxType) === type
+          })) {
+            await movContext.parseOneBox(
+              ioReader,
+              stream,
+              {
+                type,
+                size: size - 8
+              },
+              movContext
+            )
+          }
+          else {
+            await ioReader.skip(Math.min(size - 8, Number(endPos - ioReader.getPos())))
+          }
         }
       }
     }
@@ -349,8 +378,45 @@ export default async function read(ioReader: IOReader, stream: Stream, atom: Ato
             movContext
           )
         }
+        else if (type === mktag(BoxType.PCMC)) {
+          await pcmc(
+            ioReader,
+            stream,
+            {
+              type,
+              size: size - 8
+            },
+            movContext
+          )
+        }
         else {
-          await ioReader.skip(Math.min(size - 8, Number(endPos - ioReader.getPos())))
+          if (movContext.parsers && movContext.parsers[type]) {
+            await movContext.parsers[type](
+              ioReader,
+              null,
+              {
+                type,
+                size: size - 8
+              },
+              movContext
+            )
+          }
+          else if (movContext.parseOneBox && ContainerBoxs.some((boxType) => {
+            return mktag(boxType) === type
+          })) {
+            await movContext.parseOneBox(
+              ioReader,
+              stream,
+              {
+                type,
+                size: size - 8
+              },
+              movContext
+            )
+          }
+          else {
+            await ioReader.skip(Math.min(size - 8, Number(endPos - ioReader.getPos())))
+          }
         }
       }
     }

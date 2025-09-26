@@ -24,12 +24,11 @@
  */
 
 import * as array from 'common/util/array'
-import AVPacket from '../struct/avpacket'
+import AVPacket, { AVPacketFlags } from '../struct/avpacket'
 import BufferWriter from 'common/io/BufferWriter'
 import BufferReader from 'common/io/BufferReader'
 import { AVPacketSideDataType } from '../codec'
 import BitReader from 'common/io/BitReader'
-import AVStream from '../AVStream'
 import * as logger from 'common/util/logger'
 import { mapUint8Array } from 'cheap/std/memory'
 import * as naluUtil from '../util/nalu'
@@ -39,15 +38,12 @@ import { Uint8ArrayInterface } from 'common/io/interface'
 import * as intread from '../util/intread'
 import * as intwrite from '../util/intwrite'
 import { AVPixelFormat } from '../pixfmt'
+import AVCodecParameters from '../struct/avcodecparameters'
+import { Data } from 'common/types/type'
 
 export const H264_MAX_DPB_FRAMES = 16
 
 export const NALULengthSizeMinusOne = 3
-
-export const enum BitFormat {
-  AVCC = 1,
-  ANNEXB
-}
 
 export const enum PictureType {
   I = 1,
@@ -361,7 +357,7 @@ export function generateAnnexbExtradata(data: Uint8ArrayInterface) {
  * 
  * 需要保证 data 是 safe 的
  */
-export function annexb2Avcc(data: Uint8ArrayInterface) {
+export function annexb2Avcc(data: Uint8ArrayInterface, reverseSps: boolean = false) {
 
   let nalus = naluUtil.splitNaluByStartCode(data)
   let extradata: Uint8Array
@@ -392,10 +388,12 @@ export function annexb2Avcc(data: Uint8ArrayInterface) {
       extradata = spsPps2Extradata(spss, ppss, spsExts)
       nalus = nalus.filter((nalu) => {
         const type = nalu[0] & 0x1f
-        return type !== H264NaluType.kSliceAUD
-          && type !== H264NaluType.kSlicePPS
-          && type !== H264NaluType.kSliceSPS
-          && type !== H264NaluType.kSPSExt
+        return reverseSps
+          ? type !== H264NaluType.kSliceAUD
+          : (type !== H264NaluType.kSliceAUD
+            && type !== H264NaluType.kSlicePPS
+            && type !== H264NaluType.kSliceSPS
+            && type !== H264NaluType.kSPSExt)
       })
     }
     else {
@@ -531,8 +529,15 @@ export function annexbAddExtradata(data: Uint8ArrayInterface, extradata: Uint8Ar
  * 
  * 需要保证 data 是 safe 的
  */
-export function avcc2Annexb(data: Uint8ArrayInterface, extradata?: Uint8ArrayInterface) {
-  const naluLengthSizeMinusOne = extradata ? (extradata[4] & 0x03) : NALULengthSizeMinusOne
+export function avcc2Annexb(
+  data: Uint8ArrayInterface,
+  extradata?: Uint8ArrayInterface,
+  naluLengthSizeMinusOne: int32 = NALULengthSizeMinusOne
+) {
+  if (extradata) {
+    naluLengthSizeMinusOne = extradata[4] & 0x03
+  }
+
   let spss: Uint8ArrayInterface[] = []
   let ppss: Uint8ArrayInterface[] = []
   let spsExts: Uint8ArrayInterface[] = []
@@ -568,7 +573,14 @@ export function avcc2Annexb(data: Uint8ArrayInterface, extradata?: Uint8ArrayInt
   }
 }
 
-export function parseAVCodecParameters(stream: AVStream, extradata?: Uint8ArrayInterface) {
+export function parseAVCodecParameters(
+  stream: {
+    codecpar: AVCodecParameters,
+    sideData: Partial<Record<AVPacketSideDataType, Uint8Array>>,
+    metadata: Data
+  },
+  extradata?: Uint8ArrayInterface
+) {
   if (!extradata && stream.sideData[AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA]) {
     extradata = stream.sideData[AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA]
   }
@@ -584,7 +596,6 @@ export function parseAVCodecParameters(stream: AVStream, extradata?: Uint8ArrayI
     })
   }
   else if (extradata && extradata.length >= 6) {
-    stream.metadata.naluLengthSizeMinusOne = (extradata[4] & 0x03)
     const { spss } = extradata2SpsPps(extradata)
     if (spss.length) {
       sps = spss[0]
@@ -636,7 +647,7 @@ export function parseAVCodecParameters(stream: AVStream, extradata?: Uint8ArrayI
 }
 
 export function isIDR(avpacket: pointer<AVPacket>, naluLengthSize: int32 = 4) {
-  if (avpacket.bitFormat === BitFormat.ANNEXB) {
+  if (avpacket.flags & AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB) {
     let nalus = naluUtil.splitNaluByStartCode(mapUint8Array(avpacket.data, reinterpret_cast<size>(avpacket.size)))
     return nalus.some((nalu) => {
       const type = nalu[0] & 0x1f
@@ -755,11 +766,31 @@ export function parseSPS(sps: Uint8ArrayInterface): H264SPS {
     // qpprime_y_zero_transform_bypass_flag
     bitReader.readU1()
 
+    function skipScalingList(sizeOfScalingList: number) {
+      let lastScale = 8
+      let nextScale = 8
+      let deltaScale: number
+      for (let j = 0; j < sizeOfScalingList; j++) {
+        if (nextScale !== 0) {
+          deltaScale = expgolomb.readSE(bitReader)
+          nextScale = (lastScale + deltaScale + 256) % 256
+        }
+        lastScale = (nextScale === 0) ? lastScale : nextScale
+      }
+    }
     let seqScalingMatrixPresentFlag = bitReader.readU1()
     if (seqScalingMatrixPresentFlag) {
       const seqScalingListPresentFlag = new Array(8)
       for (let i = 0; i < ((chromaFormatIdc != 3) ? 8 : 12); i++) {
         seqScalingListPresentFlag[i] = bitReader.readU1()
+        if (seqScalingListPresentFlag[i]) {
+          if (i < 6) {
+            skipScalingList(16)
+          }
+          else {
+            skipScalingList(64)
+          }
+        }
       }
     }
   }

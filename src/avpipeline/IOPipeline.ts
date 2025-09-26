@@ -33,11 +33,12 @@ import { REQUEST, RpcMessage } from 'common/network/IPCPort'
 import { mapSafeUint8Array } from 'cheap/std/memory'
 import FileIOLoader from 'avnetwork/ioLoader/FileIOLoader'
 import * as logger from 'common/util/logger'
-import DashIOLoader from 'avnetwork/ioLoader/DashIOLoader'
-import HlsIOLoader from 'avnetwork/ioLoader/HlsIOLoader'
+import type DashIOLoader from 'avnetwork/ioLoader/DashIOLoader'
+import type HlsIOLoader from 'avnetwork/ioLoader/HlsIOLoader'
 import WebSocketIOLoader from 'avnetwork/ioLoader/WebSocketIOLoader'
 import WebTransportIOLoader from 'avnetwork/ioLoader/WebTransportIOLoader'
 import { IOType } from 'avutil/avformat'
+import { AVMediaType } from 'avutil/codec'
 
 export interface IOTaskOptions extends TaskOptions {
   type: IOType
@@ -154,6 +155,9 @@ export default class IOPipeline extends Pipeline {
             ipcPort.reply(request, len)
           }
           catch (error) {
+            if (!this.tasks.has(options.taskId)) {
+              return
+            }
             logger.error(`loader read error, ${error}, taskId: ${options.taskId}`)
             ipcPort.reply(request, errorType.DATA_INVALID)
           }
@@ -240,9 +244,12 @@ export default class IOPipeline extends Pipeline {
   public async hasAudio(taskId: string) {
     const task = this.tasks.get(taskId)
     if (task) {
-      if (defined(ENABLE_PROTOCOL_DASH)) {
+      if (defined(ENABLE_PROTOCOL_DASH) || defined(ENABLE_PROTOCOL_HLS)) {
         if (task.type === IOType.DASH) {
           return (task.ioLoader as DashIOLoader).hasAudio()
+        }
+        else if (task.type === IOType.HLS) {
+          return (task.ioLoader as HlsIOLoader).hasAudio()
         }
       }
     }
@@ -252,9 +259,12 @@ export default class IOPipeline extends Pipeline {
   public async hasVideo(taskId: string) {
     const task = this.tasks.get(taskId)
     if (task) {
-      if (defined(ENABLE_PROTOCOL_DASH)) {
+      if (defined(ENABLE_PROTOCOL_DASH) || defined(ENABLE_PROTOCOL_HLS)) {
         if (task.type === IOType.DASH) {
           return (task.ioLoader as DashIOLoader).hasVideo()
+        }
+        else if (task.type === IOType.HLS) {
+          return (task.ioLoader as HlsIOLoader).hasVideo()
         }
       }
     }
@@ -264,9 +274,12 @@ export default class IOPipeline extends Pipeline {
   public async hasSubtitle(taskId: string) {
     const task = this.tasks.get(taskId)
     if (task) {
-      if (defined(ENABLE_PROTOCOL_DASH)) {
+      if (defined(ENABLE_PROTOCOL_DASH) || defined(ENABLE_PROTOCOL_HLS)) {
         if (task.type === IOType.DASH) {
           return (task.ioLoader as DashIOLoader).hasSubtitle()
+        }
+        else if (task.type === IOType.HLS) {
+          return (task.ioLoader as HlsIOLoader).hasSubtitle()
         }
       }
     }
@@ -294,9 +307,12 @@ export default class IOPipeline extends Pipeline {
   public async getAudioList(taskId: string) {
     const task = this.tasks.get(taskId)
     if (task) {
-      if (defined(ENABLE_PROTOCOL_DASH)) {
+      if (defined(ENABLE_PROTOCOL_DASH) || defined(ENABLE_PROTOCOL_HLS)) {
         if (task.type === IOType.DASH) {
           return (task.ioLoader as DashIOLoader).getAudioList()
+        }
+        else if (task.type === IOType.HLS) {
+          return (task.ioLoader as HlsIOLoader).getAudioList()
         }
       }
     }
@@ -309,9 +325,12 @@ export default class IOPipeline extends Pipeline {
   public async getSubtitleList(taskId: string) {
     const task = this.tasks.get(taskId)
     if (task) {
-      if (defined(ENABLE_PROTOCOL_DASH)) {
+      if (defined(ENABLE_PROTOCOL_DASH) || defined(ENABLE_PROTOCOL_HLS)) {
         if (task.type === IOType.DASH) {
           return (task.ioLoader as DashIOLoader).getSubtitleList()
+        }
+        else if (task.type === IOType.HLS) {
+          return (task.ioLoader as HlsIOLoader).getSubtitleList()
         }
       }
     }
@@ -326,7 +345,7 @@ export default class IOPipeline extends Pipeline {
     if (task) {
       if (defined(ENABLE_PROTOCOL_DASH) || defined(ENABLE_PROTOCOL_HLS)) {
         if (task.type === IOType.DASH) {
-          (task.ioLoader as DashIOLoader).selectVideo(index)
+          return (task.ioLoader as DashIOLoader).selectVideo(index)
         }
         else if (task.type === IOType.HLS) {
           return (task.ioLoader as HlsIOLoader).selectVideo(index)
@@ -338,9 +357,12 @@ export default class IOPipeline extends Pipeline {
   public async selectAudio(taskId: string, index: number) {
     const task = this.tasks.get(taskId)
     if (task) {
-      if (defined(ENABLE_PROTOCOL_DASH)) {
+      if (defined(ENABLE_PROTOCOL_DASH) || defined(ENABLE_PROTOCOL_HLS)) {
         if (task.type === IOType.DASH) {
-          (task.ioLoader as DashIOLoader).selectAudio(index)
+          return (task.ioLoader as DashIOLoader).selectAudio(index)
+        }
+        else if (task.type === IOType.HLS) {
+          return (task.ioLoader as HlsIOLoader).selectAudio(index)
         }
       }
     }
@@ -349,9 +371,23 @@ export default class IOPipeline extends Pipeline {
   public async selectSubtitle(taskId: string, index: number) {
     const task = this.tasks.get(taskId)
     if (task) {
+      if (defined(ENABLE_PROTOCOL_DASH) || defined(ENABLE_PROTOCOL_HLS)) {
+        if (task.type === IOType.DASH) {
+          return (task.ioLoader as DashIOLoader).selectSubtitle(index)
+        }
+        else if (task.type === IOType.HLS) {
+          return (task.ioLoader as HlsIOLoader).selectSubtitle(index)
+        }
+      }
+    }
+  }
+
+  public async getCurrentProtection(taskId: string, mediaType: AVMediaType) {
+    const task = this.tasks.get(taskId)
+    if (task) {
       if (defined(ENABLE_PROTOCOL_DASH)) {
         if (task.type === IOType.DASH) {
-          (task.ioLoader as DashIOLoader).selectSubtitle(index)
+          return (task.ioLoader as DashIOLoader).getCurrentProtection(mediaType)
         }
       }
     }
@@ -374,6 +410,18 @@ export default class IOPipeline extends Pipeline {
     return 0
   }
 
+  public async setStart(taskId: string, start: number) {
+    const task = this.tasks.get(taskId)
+    if (task) {
+      if (defined(ENABLE_PROTOCOL_HLS)) {
+        if (task.type === IOType.HLS) {
+          return (task.ioLoader as HlsIOLoader).setStart(start)
+        }
+      }
+    }
+    return 0
+  }
+
   public async registerTask(options: IOTaskOptions): Promise<number> {
     if (this.tasks.has(options.taskId)) {
       return errorType.INVALID_OPERATE
@@ -384,9 +432,12 @@ export default class IOPipeline extends Pipeline {
   public async unregisterTask(id: string): Promise<void> {
     const task = this.tasks.get(id)
     if (task) {
-      await task.ioLoader.stop()
+      await task.ioLoader.stop().catch((error) => {
+        logger.warn(`stop ioloader error: ${error}, we will ignore it`)
+      })
       task.ipcPort.destroy()
       this.tasks.delete(id)
+      logger.debug(`unregisterTask task, taskId: ${id}`)
     }
   }
 }

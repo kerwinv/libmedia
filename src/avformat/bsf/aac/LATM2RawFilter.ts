@@ -55,6 +55,7 @@ export default class LATM2RawFilter extends AVBSFilter {
     dts: bigint
     buffer: Uint8Array
     extradata: Uint8Array
+    pos: int64
   }[]
 
   private refSampleDuration: bigint
@@ -91,6 +92,18 @@ export default class LATM2RawFilter extends AVBSFilter {
       const info = aac.parseLATMHeader(null, this.bitReader)
 
       if (is.number(info)) {
+        let synced = false
+        while (this.bitReader.remainingLength() >= 20) {
+          const syncWord = this.bitReader.peekU(11)
+          if (syncWord === 0x2B7) {
+            synced = true
+            break
+          }
+          this.bitReader.readU1()
+        }
+        if (synced) {
+          continue
+        }
         logger.error('AACLATMParser parse failed')
         this.bitReader.reset()
         return errorType.DATA_INVALID
@@ -118,7 +131,8 @@ export default class LATM2RawFilter extends AVBSFilter {
       const item = {
         dts: lastDts,
         buffer: rawData,
-        extradata: null
+        extradata: null,
+        pos: avpacket.pos
       }
 
       const hasNewExtraData = this.inCodecpar.profile !== this.streamMuxConfig.profile
@@ -168,6 +182,7 @@ export default class LATM2RawFilter extends AVBSFilter {
       addAVPacketData(avpacket, data, item.buffer.length)
 
       avpacket.dts = avpacket.pts = item.dts
+      avpacket.pos = item.pos
       avpacket.flags |= AVPacketFlags.AV_PKT_FLAG_KEY
       avpacket.duration = this.refSampleDuration
       if (item.extradata) {
@@ -184,6 +199,7 @@ export default class LATM2RawFilter extends AVBSFilter {
 
   public reset(): number {
     this.bitReader.reset()
+    this.caches.length = 0
     return 0
   }
 }

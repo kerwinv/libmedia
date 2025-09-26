@@ -67,7 +67,6 @@ import { avD2Q, avRescaleQ, avRescaleQ3 } from 'avutil/util/rational'
 import { AV_MILLI_TIME_BASE, AV_MILLI_TIME_BASE_Q, AV_NANO_TIME_BASE, AV_NANO_TIME_BASE_Q, INT32_MAX, NOPTS_VALUE, NOPTS_VALUE_BIGINT } from 'avutil/constant'
 import * as array from 'common/util/array'
 import seekInBytes from '../function/seekInBytes'
-import { BitFormat } from 'avutil/codecs/h264'
 import isDef from 'common/function/isDef'
 import { FlvColorInfo, FlvStreamContext } from './flv/type'
 import * as amf from 'avutil/util/amf'
@@ -79,6 +78,9 @@ import { AVChannel } from 'avutil/audiosamplefmt'
 import * as is from 'common/util/is'
 
 export interface IFlvFormatOptions {
+  /**
+   * 使用纳秒时间戳
+   */
   useNanoTimestamp?: boolean
 }
 
@@ -195,15 +197,12 @@ export default class IFlvFormat extends IFormat {
 
       if (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_H264) {
         h264.parseAVCodecParameters(stream)
-        stream.codecpar.bitFormat = BitFormat.AVCC
       }
       else if (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC) {
         hevc.parseAVCodecParameters(stream)
-        stream.codecpar.bitFormat = BitFormat.AVCC
       }
       else if (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC) {
         vvc.parseAVCodecParameters(stream)
-        stream.codecpar.bitFormat = BitFormat.AVCC
       }
       else if (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_AV1) {
         av1.parseAVCodecParameters(stream)
@@ -757,12 +756,6 @@ export default class IFlvFormat extends IFormat {
           }
           nextAVPacket.streamIndex = stream.index
           size -= trackSize
-          if (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_H264
-            || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC
-            || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
-          ) {
-            avpacket.bitFormat = BitFormat.AVCC
-          }
           if (videoPacketType === VideoPacketType.Metadata) {
             const now = formatContext.ioReader.getPos()
             const endPos = now + static_cast<int64>(trackSize)
@@ -873,7 +866,6 @@ export default class IFlvFormat extends IFormat {
             || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
             || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_MPEG4
           ) {
-            avpacket.bitFormat = BitFormat.AVCC
             const packetType = await formatContext.ioReader.readUint8()
             const ct: int32 = await formatContext.ioReader.readInt24()
             size -= 4
@@ -948,7 +940,9 @@ export default class IFlvFormat extends IFormat {
       return await this.readAVPacket_(formatContext, avpacket)
     }
     catch (error) {
-      if (formatContext.ioReader.error !== IOError.END) {
+      if (formatContext.ioReader.error !== IOError.END
+        && formatContext.ioReader.error !== IOError.ABORT
+      ) {
         logger.error(`read packet error, ${error}`)
         return errorType.DATA_INVALID
       }
@@ -976,7 +970,13 @@ export default class IFlvFormat extends IFormat {
             continue
           }
 
-          await formatContext.ioReader.skip(7 + size)
+          await formatContext.ioReader.skip(4)
+          const streamId = await formatContext.ioReader.readUint24()
+          if (streamId !== 0) {
+            await formatContext.ioReader.seek(pos + 1n)
+            continue
+          }
+          await formatContext.ioReader.skip(size)
           const tagSize = formatContext.ioReader.getPos() - pos
           const prev = static_cast<int64>(await formatContext.ioReader.readUint32())
 

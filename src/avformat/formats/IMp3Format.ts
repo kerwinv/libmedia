@@ -32,7 +32,7 @@ import { AVFormat, AVSeekFlags } from 'avutil/avformat'
 import { mapSafeUint8Array } from 'cheap/std/memory'
 import { avMalloc } from 'avutil/util/mem'
 import { addAVPacketData } from 'avutil/util/avpacket'
-import AVStream from 'avutil/AVStream'
+import AVStream, { AVStreamMetadataKey } from 'avutil/AVStream'
 import { AV_MILLI_TIME_BASE_Q, NOPTS_VALUE, NOPTS_VALUE_BIGINT } from 'avutil/constant'
 import * as text from 'common/util/text'
 import { IOFlags } from 'avutil/avformat'
@@ -47,6 +47,7 @@ import * as frameHeader from './mp3/frameHeader'
 import { IOError } from 'common/io/error'
 import { FrameHeader } from './mp3/frameHeader'
 import * as errorType from 'avutil/error'
+import * as is from 'common/util/is'
 
 interface Mp3Context {
   firstFramePos: int64
@@ -83,6 +84,36 @@ export default class IMp3Format extends IFormat {
     }
   }
 
+  private async parseID3(formatContext: AVIFormatContext, stream: AVStream) {
+    const hasID3 = (await formatContext.ioReader.peekString(3)) === 'ID3'
+    if (hasID3) {
+      await formatContext.ioReader.skip(3)
+
+      this.context.id3v2.version = await formatContext.ioReader.readUint8()
+      this.context.id3v2.revision = await formatContext.ioReader.readUint8()
+      this.context.id3v2.flags = await formatContext.ioReader.readUint8()
+
+      const len = (((await formatContext.ioReader.readUint8()) & 0x7F) << 21)
+        | (((await formatContext.ioReader.readUint8()) & 0x7F) << 14)
+        | (((await formatContext.ioReader.readUint8()) & 0x7F) << 7)
+        | ((await formatContext.ioReader.readUint8()) & 0x7F)
+
+      await id3v2.parse(formatContext.ioReader, len, this.context.id3v2, formatContext.metadata)
+
+      if (is.bigint(stream.metadata['com.apple.streaming.transportStreamTimestamp'])) {
+        const mp3Context = stream.privData as Mp3StreamContext
+        mp3Context.nextDTS = avRescaleQ(
+          stream.metadata['com.apple.streaming.transportStreamTimestamp'],
+          {
+            num: 1,
+            den: 90000
+          },
+          stream.timeBase
+        )
+      }
+    }
+  }
+
   public async readHeader(formatContext: AVIFormatContext): Promise<number> {
     const stream = formatContext.createStream()
 
@@ -101,17 +132,18 @@ export default class IMp3Format extends IFormat {
 
     stream.privData = mp3Context
 
-    const metadata: Mp3MetaData = stream.metadata = {}
-
     const fileSize = await formatContext.ioReader.fileSize()
 
-    if (formatContext.ioReader.flags & IOFlags.SEEKABLE) {
+    if ((formatContext.ioReader.flags & IOFlags.SEEKABLE)
+      && !(formatContext.ioReader.flags & IOFlags.SLICE)
+    ) {
       if (fileSize > ID3V1_SIZE) {
         await formatContext.ioReader.seek(fileSize - static_cast<int64>(ID3V1_SIZE))
 
         const isID3V1 = (await formatContext.ioReader.readString(3)) === 'TAG'
 
         if (isID3V1) {
+          const metadata: Mp3MetaData = formatContext.metadata = {}
           let buffer = await formatContext.ioReader.readBuffer(30)
           metadata.title = text.decode(buffer).replace(/\s/g, '')
 
@@ -140,22 +172,7 @@ export default class IMp3Format extends IFormat {
 
     await formatContext.ioReader.seek(0n)
 
-    const hasID3 = (await formatContext.ioReader.peekString(3)) === 'ID3'
-
-    if (hasID3) {
-      await formatContext.ioReader.skip(3)
-
-      this.context.id3v2.version = await formatContext.ioReader.readUint8()
-      this.context.id3v2.revision = await formatContext.ioReader.readUint8()
-      this.context.id3v2.flags = await formatContext.ioReader.readUint8()
-
-      const len = (((await formatContext.ioReader.readUint8()) & 0x7F) << 21)
-        | (((await formatContext.ioReader.readUint8()) & 0x7F) << 14)
-        | (((await formatContext.ioReader.readUint8()) & 0x7F) << 7)
-        | ((await formatContext.ioReader.readUint8()) & 0x7F)
-
-      await id3v2.parse(formatContext.ioReader, len, this.context.id3v2, metadata)
-    }
+    await this.parseID3(formatContext, stream)
 
     this.context.firstFramePos = formatContext.ioReader.getPos()
 
@@ -245,7 +262,7 @@ export default class IMp3Format extends IFormat {
       if (flags & XingFlag.QSCALE) {
         await formatContext.ioReader.skip(4)
       }
-      metadata.encoder = await formatContext.ioReader.readString(9)
+      stream.metadata[AVStreamMetadataKey.ENCODER] = await formatContext.ioReader.readString(9)
 
       this.context.firstFramePos += static_cast<int64>(frameLength)
     }
@@ -266,8 +283,10 @@ export default class IMp3Format extends IFormat {
       else {
         this.context.isVBR = false
         stream.codecpar.bitrate = bitrate * 1000n
-        mp3Context.nbFrame = (fileSize - this.context.firstFramePos - static_cast<int64>(ID3V1_SIZE)) / static_cast<int64>(frameLength)
-        stream.duration = (mp3Context.nbFrame * static_cast<int64>(stream.codecpar.frameSize))
+        if (fileSize) {
+          mp3Context.nbFrame = (fileSize - this.context.firstFramePos - static_cast<int64>(ID3V1_SIZE)) / static_cast<int64>(frameLength)
+          stream.duration = (mp3Context.nbFrame * static_cast<int64>(stream.codecpar.frameSize))
+        }
         mp3Context.frameLength = frameLength
         this.context.fileSize = fileSize
       }
@@ -294,6 +313,10 @@ export default class IMp3Format extends IFormat {
       }
     }
 
+    if (mp3Context.nbFrame) {
+      stream.nbFrames = mp3Context.nbFrame
+    }
+
     return 0
   }
 
@@ -310,19 +333,25 @@ export default class IMp3Format extends IFormat {
     }
 
     try {
+
+      if (formatContext.ioReader.flags & IOFlags.SLICE) {
+        await this.parseID3(formatContext, stream)
+      }
+
       frameHeader.parse(mp3Context.frameHeader, await formatContext.ioReader.peekUint32())
 
-      let frameLength = this.context.isVBR ? frameHeader.getFrameLength(mp3Context.frameHeader, stream.codecpar.sampleRate) : mp3Context.frameLength
+      const frameLength = frameHeader.getFrameLength(mp3Context.frameHeader, stream.codecpar.sampleRate)
+      const frameSize = mp3.getFrameSizeByVersionLayer(mp3Context.frameHeader.version, mp3Context.frameHeader.layer)
 
       avpacket.size = frameLength
       avpacket.pos = pos
       avpacket.streamIndex = stream.index
       avpacket.timeBase = stream.timeBase
-      avpacket.duration = static_cast<int64>(stream.codecpar.frameSize)
+      avpacket.duration = static_cast<int64>(frameSize)
       avpacket.dts = avpacket.pts = mp3Context.nextDTS
       avpacket.flags |= AVPacketFlags.AV_PKT_FLAG_KEY
 
-      mp3Context.nextDTS += static_cast<int64>(stream.codecpar.frameSize)
+      mp3Context.nextDTS += static_cast<int64>(frameSize)
 
       const data: pointer<uint8> = avMalloc(frameLength)
       addAVPacketData(avpacket, data, frameLength)
@@ -330,7 +359,9 @@ export default class IMp3Format extends IFormat {
       return 0
     }
     catch (error) {
-      if (formatContext.ioReader.error !== IOError.END) {
+      if (formatContext.ioReader.error !== IOError.END
+        && formatContext.ioReader.error !== IOError.ABORT
+      ) {
         logger.error(error.message)
       }
       return formatContext.ioReader.error
@@ -405,6 +436,13 @@ export default class IMp3Format extends IFormat {
     const now = formatContext.ioReader.getPos()
     const mp3Context = stream.privData as Mp3StreamContext
 
+    if (flags & AVSeekFlags.TIMESTAMP && (formatContext.ioReader.flags & IOFlags.SLICE)) {
+      const seekTime = avRescaleQ(timestamp, stream.timeBase, AV_MILLI_TIME_BASE_Q)
+      await formatContext.ioReader.seek(seekTime, true)
+      mp3Context.nextDTS = timestamp
+      return 0n
+    }
+
     if (flags & AVSeekFlags.BYTE) {
 
       const size = await formatContext.ioReader.fileSize()
@@ -424,7 +462,7 @@ export default class IMp3Format extends IFormat {
       if (!(flags & AVSeekFlags.ANY)) {
         await this.syncToFrame(formatContext)
 
-        if (stream.duration && size) {
+        if (stream.duration && stream.duration !== NOPTS_VALUE_BIGINT && size) {
           mp3Context.nextDTS = timestamp / size * stream.duration
         }
       }

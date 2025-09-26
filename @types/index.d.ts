@@ -69,6 +69,8 @@ declare const ENABLE_DEMUXER_HEVC: boolean
 
 declare const ENABLE_DEMUXER_VVC: boolean
 
+declare const ENABLE_DEMUXER_AVI: boolean
+
 declare const ENABLE_MUXER_FLV: boolean
 
 declare const ENABLE_MUXER_MP4: boolean
@@ -82,6 +84,8 @@ declare const ENABLE_MUXER_IVF: boolean
 declare const ENABLE_MUXER_MPEGTS: boolean
 
 declare const ENABLE_MUXER_OGG: boolean
+
+declare const ENABLE_MUXER_WAV: boolean
 
 declare const ENABLE_MSE: boolean
 

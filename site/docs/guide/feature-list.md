@@ -39,6 +39,7 @@ libmedia 可以完成以下功能:
 | mpegps   | ✅       | ❌        |
 | matroska | ✅       | ✅        |
 | webm     | ✅       | ✅        |
+| avi      | ✅       | ❌        |
 | h264 裸流 | ✅       | ❌        |
 | hevc 裸流 | ✅       | ❌        |
 | vvc  裸流 | ✅       | ❌        |
@@ -47,7 +48,7 @@ libmedia 可以完成以下功能:
 | ivf      | ✅       | ✅        |
 | aac      | ✅       | ❌        |
 | flac     | ✅       | ❌        |
-| wav      | ✅       | ❌        |
+| wav      | ✅       | ✅        |
 | webvtt   | ✅       | ❌        |
 | srt      | ✅       | ❌        |
 | ass      | ✅       | ❌        |

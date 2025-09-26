@@ -30,7 +30,7 @@ import * as logger from 'common/util/logger'
 import { IOError } from 'common/io/error'
 import * as errorType from 'avutil/error'
 import IFormat from './IFormat'
-import { AVFormat } from 'avutil/avformat'
+import { AVFormat, AVSeekFlags } from 'avutil/avformat'
 import { mapUint8Array, memcpyFromUint8Array } from 'cheap/std/memory'
 import { avFree, avMalloc } from 'avutil/util/mem'
 import { addAVPacketData, addAVPacketSideData, createAVPacket } from 'avutil/util/avpacket'
@@ -69,6 +69,7 @@ import * as text from 'common/util/text'
 import isDef from 'common/function/isDef'
 import * as naluUtil from 'avutil/util/nalu'
 import { AVStreamMetadataKey } from 'avutil/AVStream'
+import { AVCodecParameterFlags } from 'avutil/struct/avcodecparameters'
 
 export default class IMatroskaFormat extends IFormat {
 
@@ -140,6 +141,7 @@ export default class IMatroskaFormat extends IFormat {
             break
           case MATROSKATrackType.VIDEO:
             stream.codecpar.codecType = AVMediaType.AVMEDIA_TYPE_VIDEO
+            stream.codecpar.flags |= AVCodecParameterFlags.AV_CODECPAR_FLAG_NO_DTS
             break
           case MATROSKATrackType.SUBTITLE:
             stream.codecpar.codecType = AVMediaType.AVMEDIA_TYPE_SUBTITLE
@@ -232,7 +234,7 @@ export default class IMatroskaFormat extends IFormat {
           stream.codecpar.codecTag = (track.codecPrivate.data[3] << 24) |  (track.codecPrivate.data[2] << 16)
           | (track.codecPrivate.data[1] << 8) | track.codecPrivate.data[0]
 
-          const codecId = tags[stream.codecpar.codecTag]
+          let codecId = tags[stream.codecpar.codecTag]
           if (codecId) {
             const data = new Uint8Array(4)
             const size = static_cast<int32>(track.codecPrivate.size)
@@ -242,6 +244,11 @@ export default class IMatroskaFormat extends IFormat {
             data[3] = size & 0xff
             track.codecPrivate.size += 4n
             track.codecPrivate.data = concatTypeArray(Uint8Array, [data, track.codecPrivate.data])
+          }
+          else {
+            stream.codecpar.codecTag = (track.codecPrivate.data[7] << 24) |  (track.codecPrivate.data[6] << 16)
+              | (track.codecPrivate.data[5] << 8) | track.codecPrivate.data[4]
+            codecId = tags[stream.codecpar.codecTag]
           }
           stream.codecpar.codecId = codecId || AVCodecID.AV_CODEC_ID_NONE
         }
@@ -254,15 +261,24 @@ export default class IMatroskaFormat extends IFormat {
           ) {
             const header = text.decode(codecPrivateData)
             let lines = header.split(/\r?\n/)
+            let format: string
             for (let i = 0; i < lines.length; i++) {
               if (lines[i].trim() === '[Events]') {
+                if (lines[i + 1] && /^Format:/.test(lines[i + 1])) {
+                  format = lines[i + 1]
+                }
                 lines = lines.slice(0, i)
                 break
               }
             }
+            if (format) {
+              format = format.replace(/^Format:/, '')
+              format = format.split(',').map((v) => v.trim()).filter((v) => v !== 'Start' && v !== 'End').join(', ')
+              format = `Format: ReadOrder, ${format}`
+            }
             // add the default Events Format
             lines.push('[Events]')
-            lines.push('Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text')
+            lines.push(format || 'Format: ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text')
             codecPrivateData = text.encode(lines.join('\n'))
           }
 
@@ -276,10 +292,7 @@ export default class IMatroskaFormat extends IFormat {
                 const extradata = mapUint8Array(stream.codecpar.extradata, reinterpret_cast<size>(stream.codecpar.extradataSize))
                 h264.parseAVCodecParameters(stream, extradata)
                 if (naluUtil.isAnnexb(extradata)) {
-                  stream.codecpar.bitFormat = h264.BitFormat.ANNEXB
-                }
-                else {
-                  stream.codecpar.bitFormat = h264.BitFormat.AVCC
+                  stream.codecpar.flags |= AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB
                 }
                 break
               }
@@ -287,10 +300,7 @@ export default class IMatroskaFormat extends IFormat {
                 const extradata = mapUint8Array(stream.codecpar.extradata, reinterpret_cast<size>(stream.codecpar.extradataSize))
                 hevc.parseAVCodecParameters(stream, extradata)
                 if (naluUtil.isAnnexb(extradata)) {
-                  stream.codecpar.bitFormat = h264.BitFormat.ANNEXB
-                }
-                else {
-                  stream.codecpar.bitFormat = h264.BitFormat.AVCC
+                  stream.codecpar.flags |= AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB
                 }
                 break
               }
@@ -298,10 +308,7 @@ export default class IMatroskaFormat extends IFormat {
                 const extradata = mapUint8Array(stream.codecpar.extradata, reinterpret_cast<size>(stream.codecpar.extradataSize))
                 vvc.parseAVCodecParameters(stream, extradata)
                 if (naluUtil.isAnnexb(extradata)) {
-                  stream.codecpar.bitFormat = h264.BitFormat.ANNEXB
-                }
-                else {
-                  stream.codecpar.bitFormat = h264.BitFormat.AVCC
+                  stream.codecpar.flags |= AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB
                 }
                 break
               }
@@ -383,6 +390,17 @@ export default class IMatroskaFormat extends IFormat {
         if (track.default == null || track.default) {
           stream.disposition |= AVDisposition.DEFAULT
         }
+        if (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_WEBVTT) {
+          if (track.codecId === 'D_WEBVTT/CAPTIONS') {
+            stream.disposition |= AVDisposition.CAPTIONS
+          }
+          else if (track.codecId === 'D_WEBVTT/DESCRIPTIONS') {
+            stream.disposition != AVDisposition.DESCRIPTIONS
+          }
+          else if (track.codecId === 'D_WEBVTT/METADATA') {
+            stream.disposition != AVDisposition.METADATA
+          }
+        }
 
         if (track.encodings) {
           array.each(track.encodings.entry, (entry) => {
@@ -407,25 +425,14 @@ export default class IMatroskaFormat extends IFormat {
           stream.codecpar.extradata = avMalloc(reinterpret_cast<size>(stream.codecpar.extradataSize))
           memcpyFromUint8Array(stream.codecpar.extradata, reinterpret_cast<size>(stream.codecpar.extradataSize), attachment.data.data)
         }
-      })
-    }
-
-    if (this.context.tags) {
-      array.each(this.context.tags.entry, (tag) => {
-        if (tag.tag?.name === 'DURATION') {
-          let time = tag.tag.string.replaceAll('\x00', '').split('.')
-          let f = time[0].split(':')
-
-          let duration = BigInt(+f[0]) * BigInt(1000000 * 60 * 60)
-            + BigInt(+f[1]) * BigInt(1000000 * 60)
-            + BigInt(+f[2]) * 1000000n
-            + (BigInt(+time[1]) / 1000n)
-
-          const stream = findStreamByTrackUid(formatContext.streams, tag.target.trackUid)
-
-          if (stream) {
-            stream.duration = avRescaleQ(duration, AV_TIME_BASE_Q, stream.timeBase)
-          }
+        if (attachment.name) {
+          stream.metadata[AVStreamMetadataKey.TITLE] = attachment.name
+        }
+        if (attachment.mime) {
+          stream.metadata[AVStreamMetadataKey.MIME] = attachment.mime
+        }
+        if (attachment.description) {
+          stream.metadata[AVStreamMetadataKey.DESCRIPTION] = attachment.description
         }
       })
     }
@@ -444,13 +451,76 @@ export default class IMatroskaFormat extends IFormat {
                 den: 1000000000
               },
               metadata: {
-                title: item.display?.title || '',
-                language: item.display?.language || ''
+                [AVStreamMetadataKey.TITLE]: item.display?.title || '',
+                [AVStreamMetadataKey.LANGUAGE]: item.display?.language || ''
               }
             })
           })
         }
       })
+    }
+
+    if (this.context.tags) {
+      array.each(this.context.tags.entry, (tag) => {
+        if (tag.tag) {
+          tag.tag.forEach((t) => {
+            const key = t.name
+            let value: any = t.string
+            if (tag.target) {
+              if (key === 'DURATION') {
+                let time = t.string.replaceAll('\x00', '').split('.')
+                let f = time[0].split(':')
+
+                value = BigInt(+f[0]) * BigInt(1000000 * 60 * 60)
+                  + BigInt(+f[1]) * BigInt(1000000 * 60)
+                  + BigInt(+f[2]) * 1000000n
+                  + (BigInt(+time[1]) / 1000n)
+              }
+
+              if (tag.target.chapterUid) {
+                for (let i = 0; i < formatContext.chapters.length; i++) {
+                  const chapter = formatContext.chapters[i]
+                  if (chapter.id === tag.target.chapterUid) {
+                    chapter.metadata[key] = value
+                  }
+                }
+              }
+              else if (tag.target.trackUid || tag.target.attachUid) {
+                const stream = findStreamByTrackUid(formatContext.streams, tag.target.trackUid || tag.target.attachUid)
+                if (stream) {
+                  if (key === 'DURATION') {
+                    stream.duration = avRescaleQ(value, AV_TIME_BASE_Q, stream.timeBase)
+                  }
+                  else {
+                    stream.metadata[key] = value
+                  }
+                }
+              }
+              else {
+                formatContext.metadata[key] = value
+              }
+            }
+            else {
+              formatContext.metadata[key] = value
+            }
+          })
+        }
+      })
+    }
+
+    if (this.context.info) {
+      if (this.context.info.muxingApp) {
+        formatContext.metadata[AVStreamMetadataKey.ENCODER] = this.context.info.muxingApp
+      }
+      if (this.context.info.title) {
+        formatContext.metadata[AVStreamMetadataKey.TITLE] = this.context.info.title
+      }
+      if (this.context.info.dateUTC?.data?.byteLength === 8) {
+        const view = new DataView(this.context.info.dateUTC.data.buffer)
+        // Convert to seconds and adjust by number of seconds between 2001-01-01 and Epoch
+        const ts = view.getBigUint64(0) / 1000000n + 978307200000n
+        formatContext.metadata[AVStreamMetadataKey.CREATION_TIME] = (new Date(Number(ts))).toISOString()
+      }
     }
   }
 
@@ -751,7 +821,12 @@ export default class IMatroskaFormat extends IFormat {
           || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC
           || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
         ) {
-          avpacket.bitFormat = stream.codecpar.bitFormat
+          if (stream.codecpar.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB) {
+            avpacket.flags |= AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB
+          }
+          else {
+            avpacket.flags &= ~AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB
+          }
         }
       }
 
@@ -896,7 +971,9 @@ export default class IMatroskaFormat extends IFormat {
       return await this.readAVPacket_(formatContext, avpacket)
     }
     catch (error) {
-      if (formatContext.ioReader.error !== IOError.END) {
+      if (formatContext.ioReader.error !== IOError.END
+        && formatContext.ioReader.error !== IOError.ABORT
+      ) {
         logger.error(`read packet error, ${error}`)
         return errorType.DATA_INVALID
       }
@@ -985,6 +1062,12 @@ export default class IMatroskaFormat extends IFormat {
   public async seek(formatContext: AVIFormatContext, stream: AVStream, timestamp: int64, flags: int32): Promise<int64> {
 
     const now = formatContext.ioReader.getPos()
+
+    if (flags & AVSeekFlags.BYTE) {
+      await formatContext.ioReader.seek(timestamp)
+      return now
+    }
+
     const pts = avRescaleQ(timestamp, stream.timeBase, AV_TIME_BASE_Q)
 
     let pos: int64 = NOPTS_VALUE_BIGINT

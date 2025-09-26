@@ -195,8 +195,8 @@ export default class IFlacFormat extends IFormat {
           const length = await formatContext.ioReader.readUint32()
           comments.push(await formatContext.ioReader.readString(length))
         }
-        stream.metadata[AVStreamMetadataKey.VENDOR] = vendorString
-        parseVorbisComment(comments, stream.metadata)
+        formatContext.metadata[AVStreamMetadataKey.VENDOR] = vendorString
+        parseVorbisComment(comments, formatContext.metadata)
         formatContext.ioReader.setEndian(true)
       }
       else if (blockType === MetaDataBlockType.CUESHEET) {
@@ -412,7 +412,9 @@ export default class IFlacFormat extends IFormat {
       return 0
     }
     catch (error) {
-      if (formatContext.ioReader.error !== IOError.END) {
+      if (formatContext.ioReader.error !== IOError.END
+        && formatContext.ioReader.error !== IOError.ABORT
+      ) {
         logger.error(`read packet error, ${error}`)
         return errorType.DATA_INVALID
       }

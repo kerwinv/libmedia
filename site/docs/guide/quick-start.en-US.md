@@ -9,6 +9,8 @@ order: 2
 
 # Quick Start
 
+Check out the [build configuration examples](https://github.com/zhaohappy/libmedia-example) to find references for your specific build tool and quickly learn how to integrate libmedia into your project.
+
 ## Preparation
 
 libmedia is developed based on the cheap library. Before using it, you need to have some knowledge of [cheap](https://github.com/zhaohappy/cheap); you need to be able to understand the development ideas of cheap and master the use of pointers. If you have learned C language, it will be very easy to get started.
@@ -37,7 +39,7 @@ yarn add @libmedia/avcodec
 
 :::
 
-Check [package](./package.md) to get the packages under ```@libmedia```. You can install them according to your needs. The version numbers of the five packages ```@libmedia/common```, ```@libmedia/cheap``` ```@libmedia/avplayer``` ```@libmedia/avplayer-ui``` ```@libmedia/avtranscoder``` are released separately; the version numbers of the remaining packages will remain consistent when released. If the project depends on multiple packages under ```@libmedia/*``` except the five packages listed above, be sure to keep their version numbers consistent. Generally, the two packages ```@libmedia/common``` and ```@libmedia/cheap``` do not need to be installed by themselves, they are automatically installed as dependencies of other packages.
+Check [package](./package.md) to get the packages under ```@libmedia```. You can install them according to your needs. The version numbers of the five packages ```@libmedia/common```, ```@libmedia/cheap``` ```@libmedia/avplayer``` ```@libmedia/avplayer-ui``` ```@libmedia/avtranscoder``` are released separately; the version numbers of the remaining packages will remain consistent when released. If the project depends on multiple packages under ```@libmedia/*``` except the five packages listed above, be sure to keep their version numbers consistent. Generally, the two packages ```@libmedia/common``` and ```@libmedia/cheap``` do not need to be installed by themselves, they are automatically installed as dependencies of other packages, After automatically installed, declare the installed version number in ```package.json```.
 
 Each package has both es6 modules and commonjs modules; es6 modules are used for browser environments, and commonjs modules are used for Node environments. When you use import to import es6 modules, use require to import commonjs modules. If your running environment is Node environment and the source code is developed using es6 modules, you need to compile it into commonjs module code to run in Node.
 
@@ -194,7 +196,21 @@ yarn add tslib
 
 :::
 
-> vite uses esbuild to compile ts by default, but esbuild does not support transformers, so you need to use tsc to compile modules that use libmedia API. You can control which files are compiled by the typescript plugin using the transformer by setting the src configuration in the typescript plugin's tsconfig. It is recommended to put related files in a directory.
+Vite uses esbuild by default to compile TypeScript, but since esbuild does not support transformers, you need to use tsc to compile the modules that make use of the libmedia API.
+
+You can control which files are processed with the cheap transformer by configuring the include option in ts-loader’s tsconfig. It’s recommended to put the relevant files in a dedicated directory. This way, files not included will still be handled by the existing toolchain, while ts-loader (with the transformer) will only process the intended ones.
+Make sure that ts-loader has the highest priority, so the cheap transformer runs first.
+
+If your build setup has Module Federation enabled, configure it to ignore modules under the @libmedia package. If you absolutely need modules under @libmedia to participate in Module Federation, you must explicitly include them, since some of these modules may not be discoverable during static analysis.
+```
+include: [
+  '@libmedia/cheap/heap',
+  '@libmedia/cheap/symbol',
+  '@libmedia/cheap/ctypeEnumRead',
+  '@libmedia/cheap/ctypeEnumWrite',
+  '@libmedia/cheap/thread/atomics'
+]
+```
 
 ## Webpack Plugin
 

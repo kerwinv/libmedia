@@ -40,6 +40,7 @@ libmedia can complete the following functions:
 | mpegps   | ✅       | ❌        |
 | matroska | ✅       | ✅        |
 | webm     | ✅       | ✅        |
+| avi      | ✅       | ❌        |
 | h264 raw | ✅       | ❌        |
 | hevc raw | ✅       | ❌        |
 | vvc  raw | ✅       | ❌        |
@@ -48,7 +49,7 @@ libmedia can complete the following functions:
 | ivf      | ✅       | ✅        |
 | aac      | ✅       | ❌        |
 | flac     | ✅       | ❌        |
-| wav      | ✅       | ❌        |
+| wav      | ✅       | ✅        |
 | webvtt   | ✅       | ❌        |
 | srt      | ✅       | ❌        |
 | ass      | ✅       | ❌        |

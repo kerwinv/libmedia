@@ -64,6 +64,7 @@ export interface VideoEncodeTaskOptions extends TaskOptions {
 
   gop: int32
   preferWebCodecs?: boolean
+  copyTs?: boolean
 }
 
 type SelfTask = Omit<VideoEncodeTaskOptions, 'resource'> & {
@@ -118,10 +119,10 @@ export default class VideoEncodePipeline extends Pipeline {
           task.hardwareEncoder.close()
           task.hardwareEncoder = null
           task.encoderFallbackReady = this.openSoftwareEncoder(task)
-          logger.warn(`video encode error width hardware, taskId: ${task.taskId}, error: ${error}, try to fallback to software encoder`)
+          logger.warn(`video encode error by hardware encoder, taskId: ${task.taskId}, error: ${error}, try to fallback to software encoder`)
         }
         else {
-          logger.error(`video encode error width hardware, taskId: ${task.taskId}, error: ${error}`)
+          logger.error(`video encode error by hardware encoder, taskId: ${task.taskId}, error: ${error}`)
         }
       },
       onReceiveAVPacket(avpacket) {
@@ -130,7 +131,8 @@ export default class VideoEncodePipeline extends Pipeline {
       },
       enableHardwareAcceleration,
       avpacketPool: task.avpacketPool,
-      avframePool: task.avframePool
+      avframePool: task.avframePool,
+      copyTs: task.copyTs ?? false
     })
   }
 
@@ -141,7 +143,8 @@ export default class VideoEncodePipeline extends Pipeline {
         task.avpacketCaches.push(reinterpret_cast<pointer<AVPacketRef>>(avpacket))
         task.stats.videoPacketEncodeCount++
       },
-      avpacketPool: task.avpacketPool
+      avpacketPool: task.avpacketPool,
+      copyTs: task.copyTs ?? false
     })
   }
 
@@ -260,7 +263,7 @@ export default class VideoEncodePipeline extends Pipeline {
                     task.hardwareEncoder.close()
                     task.hardwareEncoder = null
                     ret = await this.openSoftwareEncoder(task)
-                    logger.warn(`video encode error width hardware, taskId: ${task.taskId}, error: ${ret}, try to fallback to software encoder`)
+                    logger.warn(`video encode error by hardware encoder, taskId: ${task.taskId}, error: ${ret}, try to fallback to software encoder`)
                   }
                   if (ret) {
                     logger.info(`video encoder open error, taskId: ${task.taskId}`)

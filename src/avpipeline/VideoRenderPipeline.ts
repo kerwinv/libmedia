@@ -108,6 +108,7 @@ export interface VideoRenderTaskOptions extends TaskOptions {
   isLive: boolean
   maxHistoryFrames?: number
   keepLastFrame?: boolean
+  sar: number
 }
 
 type SelfTask = VideoRenderTaskOptions & {
@@ -639,6 +640,7 @@ export default class VideoRenderPipeline extends Pipeline {
         ) {
           // WebGPUExternalRender 性能最优
           task.render = new WebGPUExternalRender(task.canvas as OffscreenCanvas, {
+            sar: task.sar,
             devicePixelRatio: task.devicePixelRatio,
             renderMode: task.renderMode,
             onRenderContextLost: () => {
@@ -653,6 +655,7 @@ export default class VideoRenderPipeline extends Pipeline {
         else {
           // CanvasImageRender 支持 hdr 视频渲染
           task.render = new CanvasImageRender(task.canvas as OffscreenCanvas, {
+            sar: task.sar,
             devicePixelRatio: task.devicePixelRatio,
             renderMode: task.renderMode,
             // @ts-ignore
@@ -677,6 +680,7 @@ export default class VideoRenderPipeline extends Pipeline {
           array.each(WebGPURenderList, (RenderFactory) => {
             if (RenderFactory.isSupport(frame)) {
               task.render = new RenderFactory(task.canvas as OffscreenCanvas, {
+                sar: task.sar,
                 devicePixelRatio: task.devicePixelRatio,
                 renderMode: task.renderMode,
                 onRenderContextLost: () => {
@@ -695,6 +699,7 @@ export default class VideoRenderPipeline extends Pipeline {
           array.each(WebGLRenderList, (RenderFactory) => {
             if (RenderFactory.isSupport(frame)) {
               task.render = new RenderFactory(task.canvas as OffscreenCanvas, {
+                sar: task.sar,
                 devicePixelRatio: task.devicePixelRatio,
                 renderMode: task.renderMode,
                 onRenderContextLost: () => {
@@ -761,7 +766,9 @@ export default class VideoRenderPipeline extends Pipeline {
         logger.fatal('task has already call play')
       }
 
-      task.backFrame = await task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull')
+      if (!(isPointer(task.backFrame) || is.object(task.backFrame))) {
+        task.backFrame = await task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull')
+      }
 
       if (is.number(task.backFrame) && task.backFrame < 0) {
         task.backFrame = nullptr
@@ -770,7 +777,9 @@ export default class VideoRenderPipeline extends Pipeline {
         return
       }
 
-      task.frontFrame = await task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull')
+      if (!(isPointer(task.frontFrame) || is.object(task.frontFrame))) {
+        task.frontFrame = await task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull')
+      }
 
       task.frontBuffered = true
       task.ended = false
@@ -952,7 +961,7 @@ export default class VideoRenderPipeline extends Pipeline {
             task.lastAdjustTimestamp = 0n
           }
           else {
-            if (static_cast<int64>(getTimestamp()) - task.lastAdjustTimestamp >= 200n) {
+            if (static_cast<int64>(getTimestamp()) - task.lastAdjustTimestamp >= 100n) {
               const add = bigint.min(task.adjustDiff, 100n)
 
               task.masterTimer.setMasterTime(task.masterTimer.getMasterTime() + add)
@@ -1063,31 +1072,25 @@ export default class VideoRenderPipeline extends Pipeline {
         logger.fatal('task has already run')
       }
 
-      if (task.backFrame) {
-        if (!isPointer(task.backFrame)) {
-          task.backFrame.close()
-        }
-        else {
-          task.avframePool.release(task.backFrame)
-        }
+      if (!task.backFrame) {
+        task.backFrame = await task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull')
       }
-      if (task.frontFrame) {
-        if (!isPointer(task.frontFrame)) {
-          task.frontFrame.close()
-        }
-        else {
-          task.avframePool.release(task.frontFrame)
-        }
+      if (!task.frontFrame) {
+        task.frontFrame = await task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull')
       }
-
-      task.backFrame = await task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull')
-      task.frontFrame = await task.leftIPCPort.request<pointer<AVFrameRef> | VideoFrame>('pull')
 
       task.frontBuffered = true
       task.ended = false
       task.adjust = AdjustStatus.None
       task.lastNotifyPTS = NOPTS_VALUE_BIGINT
       task.firstRendered = false
+      task.pausing = false
+      task.seeking = false
+
+      if (!task.frontFrame || is.number(task.frontFrame) && task.frontFrame < 0) {
+        task.frontBuffered = false
+        task.ended = true
+      }
 
       task.currentPTS = isPointer(task.backFrame)
         ? avRescaleQ2(
@@ -1101,7 +1104,7 @@ export default class VideoRenderPipeline extends Pipeline {
           AV_MILLI_TIME_BASE_Q
         )
 
-      task.masterTimer.setMasterTime(task.startPTS)
+      task.masterTimer.setMasterTime(bigint.max(task.startPTS, task.currentPTS))
 
       task.loop.start()
     }
@@ -1363,6 +1366,10 @@ export default class VideoRenderPipeline extends Pipeline {
           task.currentPTS = pts
           task.masterTimer.setMasterTime(timestamp)
           task.lastMasterPts = timestamp
+          logger.debug(`got first video frame after syncSeekTime, pts: ${!isPointer(task.backFrame)
+            ? static_cast<int64>(task.backFrame.timestamp as uint32)
+            : task.backFrame.pts
+          }(${task.currentPTS}ms), taskId: ${task.taskId}`)
           break
         }
 
@@ -1452,11 +1459,6 @@ export default class VideoRenderPipeline extends Pipeline {
           AV_MILLI_TIME_BASE_Q
         )
       task.stats.videoCurrentTime = task.currentPTS
-
-      logger.debug(`got first video frame, pts: ${!isPointer(task.backFrame)
-        ? static_cast<int64>(task.backFrame.timestamp as uint32)
-        : task.backFrame.pts
-      }(${task.currentPTS}ms), taskId: ${task.taskId}`)
 
       task.seeking = false
       if (!task.pausing) {
@@ -1634,6 +1636,9 @@ export default class VideoRenderPipeline extends Pipeline {
         })
       }
       if (task.render) {
+        if (task.renderRedyed) {
+          task.render.clear()
+        }
         task.render.destroy()
         task.render = null
       }
@@ -1658,6 +1663,7 @@ export default class VideoRenderPipeline extends Pipeline {
       task.leftIPCPort.destroy()
       task.controlIPCPort.destroy()
       this.tasks.delete(id)
+      logger.debug(`unregisterTask task, taskId: ${id}`)
     }
   }
 }

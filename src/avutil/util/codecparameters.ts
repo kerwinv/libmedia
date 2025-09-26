@@ -53,7 +53,7 @@ function copyCodecParametersSideData(
     dst[i].type = src[i].type
     dst[i].size = src[i].size
     dst[i].data = avMalloc(src[i].size)
-    memcpy(addressof(dst[i].data), addressof(src[i].data), src[i].size)
+    memcpy(dst[i].data, src[i].data, src[i].size)
   }
 
   accessof(pnbDst) <- nbSrc
@@ -90,6 +90,7 @@ export function copyCodecParameters(dst: pointer<AVCodecParameters>, src: pointe
   dst.initialPadding = src.initialPadding
   dst.trailingPadding = src.trailingPadding
   dst.seekPreroll = src.seekPreroll
+  dst.flags = src.flags
 
   dst.framerate = src.framerate
 
@@ -131,6 +132,7 @@ export function resetCodecParameters(par: pointer<AVCodecParameters>) {
   par.framerate.num = 1
   par.profile = NOPTS_VALUE
   par.level = NOPTS_VALUE
+  par.flags = 0
 }
 
 export function freeCodecParameters(par: pointer<AVCodecParameters>) {

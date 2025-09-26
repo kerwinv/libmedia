@@ -216,7 +216,7 @@
 <body>
 
     <div style="margin-left: 10px;">
-      支持 mp4、mov、mpegts、flv、matroska、webm、mp3、ogg、flac、aac、wav 封装格式 <br>
+      支持 mp4、mov、mpegts、flv、matroska、webm、avi、mp3、ogg、flac、aac、wav 封装格式 <br>
       支持 hls、dash 协议 （只支持 url 播放）<br>
       支持 vvc、av1、hevc、h264、vp9、vp8、mpeg4、aac、mp3、opus、speex、flac、vorbis、g711 编码 <br>
       支持直播（LIVE）和点播（VOD） <br>
@@ -622,6 +622,9 @@
                   if (codecId >= 65536 && codecId <= 65572) {
                     return `../dist/decode/pcm${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`
                   }
+                  if (codecId >= 69632 && codecId <= 69683) {
+                    return `../dist/decode/adpcm${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`
+                  }
 
                   switch (codecId) {
                     // mpeg1/2
@@ -678,6 +681,41 @@
                     // vp9
                     case 167:
                       return `../dist/decode/vp9${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`
+                    case 86022 /* AVCodecID.AV_CODEC_ID_DVAUDIO */:
+                      return `../dist/decode/dvaudio${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
+                    case 24 /* AVCodecID.AV_CODEC_ID_DVVIDEO */:
+                      return `../dist/decode/dvvideo${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
+                    case 3 /* AVCodecID.AV_CODEC_ID_H261 */:
+                      return `../dist/decode/h261${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
+                    case 4 /* AVCodecID.AV_CODEC_ID_H263 */:
+                    case 20 /* AVCodecID.AV_CODEC_ID_H263I */:
+                    case 19 /* AVCodecID.AV_CODEC_ID_H263P */:
+                      return `../dist/decode/h263${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
+                    case 14 /* AVCodecID.AV_CODEC_ID_MSMPEG4V1 */:
+                    case 15 /* AVCodecID.AV_CODEC_ID_MSMPEG4V2 */:
+                    case 16 /* AVCodecID.AV_CODEC_ID_MSMPEG4V3 */:
+                      return `../dist/decode/msmpeg4${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
+                    case 5 /* AVCodecID.AV_CODEC_ID_RV10 */:
+                    case 6 /* AVCodecID.AV_CODEC_ID_RV20 */:
+                    case 68 /* AVCodecID.AV_CODEC_ID_RV30 */:
+                    case 69 /* AVCodecID.AV_CODEC_ID_RV40 */:
+                      return `../dist/decode/msmpeg4${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
+                    case 86036 /* AVCodecID.AV_CODEC_ID_COOK */:
+                    case 86057 /* AVCodecID.AV_CODEC_ID_SIPR */:
+                    case 86073 /* AVCodecID.AV_CODEC_ID_RALF */:
+                      return `../dist/decode/ra${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
+                    case 86023 /* AVCodecID.AV_CODEC_ID_WMAV1 */:
+                    case 86024 /* AVCodecID.AV_CODEC_ID_WMAV2 */:
+                    case 86052 /* AVCodecID.AV_CODEC_ID_WMAVOICE */:
+                    case 86054 /* AVCodecID.AV_CODEC_ID_WMALOSSLESS */:
+                    case 86053 /* AVCodecID.AV_CODEC_ID_WMAPRO */:
+                      return `../dist/decode/wma${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
+                    case 17 /* AVCodecID.AV_CODEC_ID_WMV1 */:
+                    case 18 /* AVCodecID.AV_CODEC_ID_WMV2 */:
+                    case 71 /* AVCodecID.AV_CODEC_ID_WMV3 */:
+                      return `../dist/decode/wmv${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
+                    case 7 /* AVCodecID.AV_CODEC_ID_MJPEG */:
+                      return `../dist/decode/mjpeg${(enableSimdComponent.enableSimd) ? '-simd' : (supportAtomic ? defaultVersion : '')}.wasm`;
                     default:
                       return null
                   }
@@ -697,6 +735,7 @@
             enableWebGPU: enableWebGPUComponent.enableWebGPU,
             enableWorker: enableWorkerComponent.enableWorker,
             loop: loopComponent.loop,
+            enableJitterBuffer: true,
             jitterBufferMax: 4,
             jitterBufferMin: 1,
             // lowLatency: true,
@@ -706,6 +745,14 @@
             maxHistoryFrames: 90,
             // samplingMode: 'gpu'
             // audioWorkletBufferLength: 40
+            lowLatency: true,
+            // audioWorkletBufferLength: 40,
+            // drmSystemOptions: {
+            //   // requestUrl: 'https://cwip-shaka-proxy.appspot.com/no_auth',
+            //   headers: {
+            //     'Content-Type': 'application/json',
+            //   }
+            // }
           })
           if (mediaStreamModeComponent.mediaStreamMode) {
             mediaStreamModeVideo = document.createElement('video')
@@ -716,8 +763,67 @@
             mediaStreamModeVideo.srcObject = container
             document.querySelector(id).appendChild(mediaStreamModeVideo)
           }
+          player.on('ended', () => {
+            if (statsTimer) {
+              clearTimeout(statsTimer)
+              statsTimer = null
+              handleStats(player.getStats())
+            }
+            if (slider) {
+              slider.currentTime = slider.duration
+            }
+            // player.destroy().then(() => {
+            //   player = null
+            //   console.log('player destroy')
+            // })
+          })
+          
+          player.on('played', () => {
+            if (statsTimer) {
+              clearTimeout(statsTimer)
+            }
+            statsTimer = setInterval(() => {
+              handleStats(player.getStats())
+            }, 1000)
+          })
+
+          player.on('time', (pts) => {
+            if (slider && !isSeeking) {
+              slider.currentTime = Number(pts)
+            }
+          })
+          player.on('changing', (mediaType, newStreamId, oldStreamId) => {
+            console.log('changing', mediaType, newStreamId, oldStreamId)
+          })
+          player.on('changed', (mediaType, newStreamId, oldStreamId) => {
+            console.log('changed', mediaType, newStreamId, oldStreamId)
+          })
+
+          player.on('error', (error) => {
+            console.log(error)
+          })
         }
-        if (!isLiveComponent.isLive && !slider) {
+        else {
+          player.options.enableHardware = enableHardwareComponent.enableHardwareAcceleration
+          player.options.enableWebCodecs = enableWebCodecsComponent.enableWebCodecs
+          player.options.enableWebGPU = enableWebGPUComponent.enableWebGPU
+          player.options.container = mediaStreamModeComponent.mediaStreamMode ? new MediaStream() : document.querySelector(id)
+          
+          if (mediaStreamModeVideo) {
+            document.querySelector(id).removeChild(mediaStreamModeVideo)
+            mediaStreamModeVideo = null
+          }
+          if (mediaStreamModeComponent.mediaStreamMode) {
+            mediaStreamModeVideo = document.createElement('video')
+            mediaStreamModeVideo.style.cssText = `
+              width: 100%;
+              height: 100%;
+            `
+            mediaStreamModeVideo.srcObject = player.options.container
+            document.querySelector(id).appendChild(mediaStreamModeVideo)
+          }
+        }
+        if (!slider) {
           slider = new Vue({
             el: '#slider',
             data: function() {
@@ -738,11 +844,24 @@
                   isSeeking = false
                 })
               }
+            },
+            mounted() {
+              if (isLiveComponent.isLive) {
+                this.$el.style.display = 'none'
+              }
+              else {
+                this.$el.style.display = 'block'
+              }
             }
           })
         }
-        else if (isLiveComponent.isLive) {
-          sliderDom.style.display = 'none'
+        else {
+          if (isLiveComponent.isLive) {
+            slider.$el.style.display = 'none'
+          }
+          else {
+            slider.$el.style.display = 'block'
+          }
         }
 
         if (!isLiveComponent.isLive && !playRateComponent) {
@@ -837,7 +956,7 @@
                     options: videoList.list.map((item, index) => {
                       return {
                         value: index,
-                        name: `${item.width}*${item.height}@${item.frameRate}`
+                        name: `${item.codec}-${item.width}*${item.height}@${item.frameRate}${item.bandwidth ? `-${item.bandwidth}` : ''}`
                       }
                     }),
                     value: videoList.selectedIndex
@@ -879,7 +998,7 @@
                     options: audioList.list.map((item, index) => {
                       return {
                         value: index,
-                        name: item.lang
+                        name: `${item.codec}-${item.lang}${item.bandwidth ? `-${item.bandwidth}` : ''}`
                       }
                     }),
                     value: audioList.selectedIndex
@@ -921,7 +1040,7 @@
                     options: subtitleList.list.map((item, index) => {
                       return {
                         value: index,
-                        name: `${item.lang}-${item.codecs}`
+                        name: `${item.lang}-${item.codec}`
                       }
                     }),
                     value: subtitleList.selectedIndex
@@ -943,7 +1062,7 @@
               document.querySelector('#subtitle-change').style.display = 'none'
             }
 
-            // player.seek(400000).then(() => {
+            // player.seek(400000n).then(() => {
               player.play({
                 audio: false,
                 video: true,
@@ -953,7 +1072,7 @@
                   mediaStreamModeVideo.play()
                 }
                 document.querySelector('#loading-mask').style.display = 'none'
-                if (!player.isDash()) {
+                if (!player.isDash() && !player.isHls()) {
                   const audioStreams = player.getStreams().filter((s => s.mediaType === 'Audio'))
                   const videoStreams = player.getStreams().filter((s => s.mediaType === 'Video'))
 
@@ -1046,26 +1165,6 @@
               })
             // })
           })
-        })
-
-        player.on('ended', () => {
-          if (statsTimer) {
-            clearTimeout(statsTimer)
-            statsTimer = null
-          }
-          if (slider) {
-            slider.currentTime = slider.duration
-          }
-          // player.destroy().then(() => {
-          //   player = null
-          //   console.log('player destroy')
-          // })
-        })
-
-        player.on('time', (pts) => {
-          if (slider && !isSeeking) {
-            slider.currentTime = Number(pts)
-          }
         })
 
         if (statsTimer) {
@@ -1453,9 +1552,28 @@
         })
       }
 
+      function testSupportWasmSimd() {
+        const asm = 'AGFzbQEAAAABBQFgAAF7AhIBA2VudgZtZW1vcnkCAwGAgAIDAgEACgoBCABBAP0ABAAL'
+        const binaryData = atob(asm)
+        const uint8Array = new Uint8Array(binaryData.length)
+        for (let i = 0; i < binaryData.length; i++) {
+          uint8Array[i] = binaryData.charCodeAt(i)
+        }
+
+        const instance = WebAssembly.compile(uint8Array).then(() => {
+          console.log('wasm simd support')
+          enableSimdComponent.enableSimd = true
+        }, () => {
+          enableSimdComponent.enableSimd = false
+          console.log('wasm simd not support')
+        })
+      }
+
+
       document.querySelector('#ua').textContent = navigator.userAgent
 
       testSupportWasmAtomic()
+      testSupportWasmSimd()
     </script>
 </body>
 </html>

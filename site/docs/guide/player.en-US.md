@@ -7,7 +7,7 @@ group:
 order: 8
 ---
 
-# Player
+# AVPlayer
 
 ## Introduction
 
@@ -68,12 +68,17 @@ const CopyWebpackPlugin = require('copy-webpack-plugin')
 
 module.exports = (env) => {
   return {
+    resolve: {
+      alias: {
+       '@libmedia/avplayer': path.resolve(__dirname, 'node_modules/@libmedia/avplayer/dist/umd/avplayer.js')
+      }
+    },
     plugins: [
       new CopyWebpackPlugin({
         patterns: [
           {
-            from: 'node_modules/@libmedia/avplayer/dist/esm/[0-9]*.avplayer.js',
-            to: './[name].[ext]'
+            from: 'node_modules/@libmedia/avplayer/dist/umd/[0-9]*.avplayer.js',
+            to: './[name][ext]'
           }
         ],
       })
@@ -87,19 +92,38 @@ module.exports = (env) => {
 // vite can use the vite-plugin-static-copy plugin
 // npm install vite-plugin-static-copy --save-dev
 import { viteStaticCopy } from 'vite-plugin-static-copy'
-export default defineConfig({
-  ...
-  plugins: [
-    viteStaticCopy({
-      targets: [
-        {
-          src: 'node_modules/@libmedia/avplayer/dist/esm/[0-9]*.avplayer.js',
-          dest: './',
-        },
-      ],
-    })
-  ],
+export default defineConfig((config) => {
+  return {
+    ...
+    plugins: [
+      viteStaticCopy({
+        targets: [
+          {
+            src: 'node_modules/@libmedia/avplayer/dist/esm/[0-9]*.avplayer.js',
+            dest: config.command === 'serve' ? './node_modules/.vite/deps/' : './assets/',
+          },
+        ],
+      })
+    ],
+  }
 });
+```
+
+```javascript [rsbuild]
+import { defineConfig } from "@rsbuild/core"
+
+export default defineConfig({
+  output: {
+    copy: [
+      { from: './node_modules/@libmedia/avplayer/dist/umd/[0-9]*.avplayer.js', to: 'static/js/[name][ext]' },
+    ],
+  },
+  resolve: {
+    alias: {
+      '@libmedia/avplayer': './node_modules/@libmedia/avplayer/dist/umd/avplayer.js',
+    },
+  },
+})
 ```
 :::
 

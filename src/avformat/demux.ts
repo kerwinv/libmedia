@@ -38,7 +38,7 @@ import { copyAVPacketData, createAVPacket, destroyAVPacket,
 } from 'avutil/util/avpacket'
 import { DURATION_MAX_READ_SIZE, SAMPLE_INDEX_STEP } from './config'
 import * as errorType from 'avutil/error'
-import AVStream from 'avutil/AVStream'
+import AVStream, { AVStreamMetadataKey } from 'avutil/AVStream'
 import * as logger from 'common/util/logger'
 import { IOError } from 'common/io/error'
 import WasmVideoDecoder from 'avcodec/wasmcodec/VideoDecoder'
@@ -130,6 +130,9 @@ async function estimateDurationFromPts(formatContext: AVIFormatContext) {
       }
       else {
         let duration = avpacket.pts
+        if (duration === NOPTS_VALUE_BIGINT) {
+          duration = avpacket.dts
+        }
         const stream = formatContext.getStreamByIndex(avpacket.streamIndex)
         if (stream.startTime !== NOPTS_VALUE_BIGINT) {
           duration -= stream.startTime
@@ -173,7 +176,13 @@ async function estimateDurationFromPts(formatContext: AVIFormatContext) {
   array.each(formatContext.interval.packetBuffer, (avpacket) => {
     destroyAVPacket(avpacket)
   })
-  formatContext.interval.packetBuffer = cache
+  formatContext.interval.packetBuffer = cache.filter((avpacket) => {
+    if (avpacket.pos >= now) {
+      destroyAVPacket(avpacket)
+      return false
+    }
+    return true
+  })
   await formatContext.iformat.seek(formatContext, null, now, AVSeekFlags.BYTE)
 }
 
@@ -318,17 +327,22 @@ export async function analyzeStreams(formatContext: AVIFormatContext): Promise<i
 
     const stream = formatContext.getStreamByIndex(avpacket.streamIndex)
 
+    let pts = avpacket.pts
+    if (pts === NOPTS_VALUE_BIGINT) {
+      pts = avpacket.dts
+    }
+
     if (avpacket.size) {
       packetCached = true
       caches.push(avpacket)
 
       if (!streamFirstGotMap[stream.index]) {
         stream.firstDTS = avpacket.dts
-        stream.startTime = avpacket.pts
+        stream.startTime = pts
         streamFirstGotMap[stream.index] = true
       }
-      else if (avpacket.pts < stream.startTime) {
-        stream.startTime = avpacket.pts
+      else if (pts < stream.startTime) {
+        stream.startTime = pts
       }
 
       if (avpacket.dts !== NOPTS_VALUE_BIGINT) {
@@ -340,10 +354,10 @@ export async function analyzeStreams(formatContext: AVIFormatContext): Promise<i
         }
       }
       if (streamPtsMap[stream.index]) {
-        streamPtsMap[stream.index].push(avpacket.pts)
+        streamPtsMap[stream.index].push(pts)
       }
       else {
-        streamPtsMap[stream.index] = [avpacket.pts]
+        streamPtsMap[stream.index] = [pts]
       }
 
       if (streamBitMap[stream.index]) {
@@ -356,6 +370,7 @@ export async function analyzeStreams(formatContext: AVIFormatContext): Promise<i
       if (!pictureGot[stream.index]
         && formatContext.getDecoderResource
         && !(formatContext.options as DemuxOptions).fastOpen
+        && !stream.metadata[AVStreamMetadataKey.ENCRYPTION]
       ) {
         let decoder = decoderMap[stream.index]
         if (!decoder) {
@@ -387,7 +402,9 @@ export async function analyzeStreams(formatContext: AVIFormatContext): Promise<i
                   stream.codecpar.colorPrimaries = avframe.colorPrimaries
                   stream.codecpar.colorTrc = avframe.colorTrc
                   stream.codecpar.chromaLocation = avframe.chromaLocation
-                  stream.codecpar.sampleAspectRatio = avframe.sampleAspectRatio
+                  if (avframe.sampleAspectRatio.num && avframe.sampleAspectRatio.den) {
+                    stream.codecpar.sampleAspectRatio = avframe.sampleAspectRatio
+                  }
                   stream.codecpar.width = avframe.width
                   stream.codecpar.height = avframe.height
                   destroyAVFrame(avframe)
@@ -420,17 +437,20 @@ export async function analyzeStreams(formatContext: AVIFormatContext): Promise<i
     }
 
     if (stream.startTime !== NOPTS_VALUE_BIGINT
-      && (avpacket.pts - stream.startTime) > avRescaleQ(
+      && (pts - stream.startTime) > avRescaleQ(
         static_cast<int64>((formatContext.options as DemuxOptions).maxAnalyzeDuration),
         AV_MILLI_TIME_BASE_Q,
         stream.timeBase
       )
       && (formatContext.streams.length >= needStreams
-        || (avpacket.pts - stream.startTime) > avRescaleQ(
+        && checkStreamParameters(formatContext)
+        || (pts - stream.startTime) > avRescaleQ(
           15000n,
           AV_MILLI_TIME_BASE_Q,
           stream.timeBase
         )
+        // 以 30 帧来判断分析的包是否足够
+        && (!streamPtsMap[stream.index] || streamPtsMap[stream.index].length > 30 * 15)
       )
       && checkPictureGot()
     ) {
@@ -468,7 +488,7 @@ export async function analyzeStreams(formatContext: AVIFormatContext): Promise<i
     }
   })
 
-  if (ret === IOError.END) {
+  if (ret === IOError.END || ret === IOError.ABORT) {
     return 0
   }
   else if (ret !== 0) {
@@ -477,6 +497,7 @@ export async function analyzeStreams(formatContext: AVIFormatContext): Promise<i
 
   if ((formatContext.iformat.type === AVFormat.MPEGTS)
     && (formatContext.ioReader.flags & IOFlags.SEEKABLE)
+    && !(formatContext.ioReader.flags & IOFlags.SLICE)
   ) {
     await estimateDurationFromPts(formatContext)
   }
@@ -484,8 +505,12 @@ export async function analyzeStreams(formatContext: AVIFormatContext): Promise<i
 }
 
 function addSample(stream: AVStream, avpacket: pointer<AVPacket>) {
+  let pts = avpacket.pts
+  if (pts === NOPTS_VALUE_BIGINT) {
+    pts = avpacket.dts
+  }
   const index = array.binarySearch(stream.sampleIndexes, (sample) => {
-    if (sample.pts < avpacket.pts) {
+    if (sample.pts < pts) {
       return 1
     }
     else {
@@ -494,7 +519,7 @@ function addSample(stream: AVStream, avpacket: pointer<AVPacket>) {
   })
   const sample = {
     dts: avpacket.dts,
-    pts: avpacket.pts,
+    pts: pts,
     pos: avpacket.pos,
     size: avpacket.size,
     duration: avpacket.duration,

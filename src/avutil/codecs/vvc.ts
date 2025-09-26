@@ -24,12 +24,11 @@
  */
 
 import * as array from 'common/util/array'
-import AVPacket from '../struct/avpacket'
+import AVPacket, { AVPacketFlags } from '../struct/avpacket'
 import BufferWriter from 'common/io/BufferWriter'
 import BufferReader from 'common/io/BufferReader'
 import { AVPacketSideDataType } from '../codec'
 import BitReader from 'common/io/BitReader'
-import AVStream from '../AVStream'
 import { mapUint8Array } from 'cheap/std/memory'
 import * as naluUtil from '../util/nalu'
 import { avMalloc } from '../util/mem'
@@ -37,10 +36,10 @@ import * as expgolomb from '../util/expgolomb'
 import { Uint8ArrayInterface } from 'common/io/interface'
 import BitWriter from 'common/io/BitWriter'
 import { Data } from 'common/types/type'
-import { BitFormat } from './h264'
 import * as intread from '../util/intread'
 import * as intwrite from '../util/intwrite'
 import { AVPixelFormat } from '../pixfmt'
+import AVCodecParameters from '../struct/avcodecparameters'
 
 const NALULengthSizeMinusOne = 3
 
@@ -510,7 +509,7 @@ export function generateAnnexbExtradata(data: Uint8ArrayInterface) {
  * 需要保证 data 是 safe 的
  * 
  */
-export function annexb2Avcc(data: Uint8ArrayInterface) {
+export function annexb2Avcc(data: Uint8ArrayInterface, reverseSps: boolean = false) {
   let extradata: Uint8Array
   let key: boolean = false
 
@@ -545,10 +544,12 @@ export function annexb2Avcc(data: Uint8ArrayInterface) {
       extradata = vpsSpsPps2Extradata(vpss, spss, ppss)
       nalus = nalus.filter((nalu) => {
         const type = (nalu[1] >>> 3) & 0x1f
-        return type !== VVCNaluType.kVPS_NUT
-          && type !== VVCNaluType.kSPS_NUT
-          && type !== VVCNaluType.kPPS_NUT
-          && type !== VVCNaluType.kAUD_NUT
+        return reverseSps
+          ? type !== VVCNaluType.kAUD_NUT
+          : (type !== VVCNaluType.kVPS_NUT
+            && type !== VVCNaluType.kSPS_NUT
+            && type !== VVCNaluType.kPPS_NUT
+            && type !== VVCNaluType.kAUD_NUT)
       })
     }
     else {
@@ -678,8 +679,14 @@ export function annexbAddExtradata(data: Uint8ArrayInterface, extradata: Uint8Ar
  * 需要保证 data 是 safe 的
  * 
  */
-export function avcc2Annexb(data: Uint8ArrayInterface, extradata?: Uint8ArrayInterface) {
-  const naluLengthSizeMinusOne = extradata ? ((extradata[0] >>> 1) & 0x03) : NALULengthSizeMinusOne
+export function avcc2Annexb(
+  data: Uint8ArrayInterface,
+  extradata?: Uint8ArrayInterface,
+  naluLengthSizeMinusOne: int32 = NALULengthSizeMinusOne
+) {
+  if (extradata) {
+    naluLengthSizeMinusOne = (extradata[0] >>> 1) & 0x03
+  }
 
   let vpss: Uint8ArrayInterface[] = []
   let spss: Uint8ArrayInterface[] = []
@@ -705,7 +712,7 @@ export function avcc2Annexb(data: Uint8ArrayInterface, extradata?: Uint8ArrayInt
   }
 }
 
-export function parseAVCodecParametersBySps(stream: AVStream, sps: Uint8ArrayInterface) {
+export function parseAVCodecParametersBySps(stream: { codecpar: AVCodecParameters }, sps: Uint8ArrayInterface) {
   const { profile, level, width, height, videoDelay, chromaFormatIdc, bitDepthMinus8 } = parseSPS(sps)
   stream.codecpar.profile = profile
   stream.codecpar.level = level
@@ -739,7 +746,14 @@ export function parseAVCodecParametersBySps(stream: AVStream, sps: Uint8ArrayInt
   }
 }
 
-export function parseAVCodecParameters(stream: AVStream, extradata?: Uint8ArrayInterface) {
+export function parseAVCodecParameters(
+  stream: {
+    codecpar: AVCodecParameters,
+    sideData: Partial<Record<AVPacketSideDataType, Uint8Array>>,
+    metadata: Data
+  },
+  extradata?: Uint8ArrayInterface
+) {
   if (!extradata && stream.sideData[AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA]) {
     extradata = stream.sideData[AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA]
   }
@@ -755,8 +769,6 @@ export function parseAVCodecParameters(stream: AVStream, extradata?: Uint8ArrayI
   }
   else if (extradata && extradata.length >= 6) {
 
-    stream.metadata.naluLengthSizeMinusOne = (extradata[0] >>> 1) & 0x03
-
     const { spss } = extradata2VpsSpsPps(extradata)
 
     if (spss.length) {
@@ -769,7 +781,7 @@ export function parseAVCodecParameters(stream: AVStream, extradata?: Uint8ArrayI
 }
 
 export function isIDR(avpacket: pointer<AVPacket>, naluLengthSize: int32 = 4) {
-  if (avpacket.bitFormat === BitFormat.ANNEXB) {
+  if (avpacket.flags & AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB) {
     let nalus = naluUtil.splitNaluByStartCode(mapUint8Array(avpacket.data, reinterpret_cast<size>(avpacket.size)))
     return nalus.some((nalu) => {
       const type = (nalu[1] >>> 3) & 0x1f

@@ -126,7 +126,18 @@ export const enum BoxType {
   DAC3 = 'dac3',
   DEC3 = 'dec3',
   EC_3 = 'ec-3',
-  AC_3 = 'ac-3'
+  AC_3 = 'ac-3',
+  PSSH = 'pssh',
+  ENCV = 'encv',
+  ENCA = 'enca',
+  SAIZ = 'saiz',
+  SAIO = 'saio',
+  SENC = 'senc',
+  SCHM = 'schm',
+  TENC = 'tenc',
+  META = 'meta',
+  CHPL = 'chpl',
+  PCMC = 'pcmC'
 }
 
 export const BasicBoxs = [
@@ -191,7 +202,12 @@ export const ContainerBoxs = [
   BoxType.IPRP,
   BoxType.IPCO,
   BoxType.STRK,
-  BoxType.MECO
+  BoxType.MECO,
+  BoxType.ENCV,
+  BoxType.ENCA,
+  BoxType.SINF,
+  BoxType.SCHI,
+  BoxType.UDTA
 ]
 
 export const enum TFHDFlags {

@@ -29,7 +29,7 @@ import * as logger from 'common/util/logger'
 import * as errorType from 'avutil/error'
 
 import { IOError } from 'common/io/error'
-import { MOVContext, MOVStreamContext, MovFormatOptions } from './mov/type'
+import { MOVContext, MOVStreamContext } from './mov/type'
 import mktag from '../function/mktag'
 import { BoxType } from './mov/boxType'
 import * as imov from './mov/imov'
@@ -46,8 +46,17 @@ import { avRescaleQ } from 'avutil/util/rational'
 import AVStream from 'avutil/AVStream'
 import { AV_MILLI_TIME_BASE_Q, NOPTS_VALUE_BIGINT } from 'avutil/constant'
 import { IOFlags } from 'avutil/avformat'
-import { BitFormat } from 'avutil/codecs/h264'
 import * as intread from 'avutil/util/intread'
+import { encryptionInfo2SideData } from 'avutil/util/encryption'
+import { AVCodecParameterFlags } from 'avutil/struct/avcodecparameters'
+import * as object from 'common/util/object'
+
+export interface IMovFormatOptions {
+  /**
+   * 忽略 editlist 的约束
+   */
+  ignoreEditlist?: boolean
+}
 
 export default class IMovFormat extends IFormat {
 
@@ -56,9 +65,9 @@ export default class IMovFormat extends IFormat {
   private context: MOVContext
   private firstAfterSeek: boolean
 
-  public options: MovFormatOptions
+  public options: IMovFormatOptions
 
-  constructor(options: MovFormatOptions = {}) {
+  constructor(options: IMovFormatOptions = {}) {
     super()
 
     this.options = options
@@ -172,6 +181,45 @@ export default class IMovFormat extends IFormat {
         await formatContext.ioReader.seek(firstMdatPos)
       }
 
+      if (!this.context.fragment) {
+        formatContext.streams.forEach((stream) => {
+          if (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_H264
+            || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC
+            || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
+          ) {
+            const streamContext = stream.privData as MOVStreamContext
+            if (stream.codecpar.videoDelay > 0
+              && (!streamContext.cttsSampleCounts
+                || !streamContext.cttsSampleCounts.length
+              )
+            ) {
+              stream.codecpar.flags |= AVCodecParameterFlags.AV_CODECPAR_FLAG_NO_PTS
+            }
+          }
+        })
+      }
+
+      if (this.context.metadata) {
+        object.extend(formatContext.metadata, this.context.metadata)
+      }
+      if (this.context.chapters?.length) {
+        for (let i = 1; i < this.context.chapters.length; i++) {
+          this.context.chapters[i - 1].end = avRescaleQ(
+            this.context.chapters[i].start,
+            this.context.chapters[i].timeBase,
+            this.context.chapters[i - 1].timeBase,
+          )
+        }
+        const lastChapter = this.context.chapters[this.context.chapters.length - 1]
+        formatContext.streams.forEach((stream) => {
+          const d = avRescaleQ(stream.duration, stream.timeBase, lastChapter.timeBase)
+          if (d > lastChapter.end) {
+            lastChapter.end = d
+          }
+        })
+        formatContext.chapters.push(...this.context.chapters)
+      }
+
       return ret
     }
     catch (error) {
@@ -188,12 +236,14 @@ export default class IMovFormat extends IFormat {
 
   private async readAVPacket_(formatContext: AVIFormatContext, avpacket: pointer<AVPacket>): Promise<number> {
 
-    const { sample, stream } = getNextSample(formatContext, this.context, formatContext.ioReader.flags)
+    const { sample, stream, encryption } = getNextSample(formatContext, this.context, formatContext.ioReader.flags)
 
     if (sample) {
       avpacket.streamIndex = stream.index
       avpacket.dts = sample.dts
-      avpacket.pts = sample.pts
+      if (!(stream.codecpar.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_NO_PTS)) {
+        avpacket.pts = sample.pts
+      }
       avpacket.duration = static_cast<int64>(sample.duration)
       avpacket.flags |= sample.flags
       avpacket.pos = sample.pos
@@ -228,13 +278,6 @@ export default class IMovFormat extends IFormat {
       const data: pointer<uint8> = avMalloc(len)
       addAVPacketData(avpacket, data, len)
       await formatContext.ioReader.readBuffer(len, mapSafeUint8Array(data, len))
-
-      if (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_H264
-        || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC
-        || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
-      ) {
-        avpacket.bitFormat = BitFormat.AVCC
-      }
 
       if (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_WEBVTT
         && avpacket.size >= 8
@@ -276,6 +319,12 @@ export default class IMovFormat extends IFormat {
         memcpyFromUint8Array(extradata, len, stream.sideData[AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA])
         delete stream.sideData[AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA]
       }
+      if (encryption) {
+        const buffer = encryptionInfo2SideData(encryption)
+        const data: pointer<uint8> = avMalloc(buffer.length)
+        memcpyFromUint8Array(data, buffer.length, buffer)
+        addAVPacketSideData(avpacket, AVPacketSideDataType.AV_PKT_DATA_ENCRYPTION_INFO, data, buffer.length)
+      }
     }
     else {
       return IOError.END
@@ -286,7 +335,13 @@ export default class IMovFormat extends IFormat {
 
   public async readAVPacket(formatContext: AVIFormatContext, avpacket: pointer<AVPacket>): Promise<number> {
     try {
-      if (this.context.fragment && !this.context.currentFragment) {
+      const hasSample = !!formatContext.streams.find((stream) => {
+        const context = stream.privData as MOVStreamContext
+        return context.samplesIndex?.length && context.sampleEnd === false
+      })
+      // 一些 fmp4 的 moov 里面存着一段样本
+      // 这里先判断有没有 sample
+      if (!hasSample && this.context.fragment && !this.context.currentFragment) {
         while (!this.context.currentFragment) {
           const pos = formatContext.ioReader.getPos()
           const size = await formatContext.ioReader.readUint32()
@@ -330,7 +385,9 @@ export default class IMovFormat extends IFormat {
       return await this.readAVPacket_(formatContext, avpacket)
     }
     catch (error) {
-      if (formatContext.ioReader.error !== IOError.END) {
+      if (formatContext.ioReader.error !== IOError.END
+        && formatContext.ioReader.error !== IOError.ABORT
+      ) {
         logger.error(`read packet error, ${error}`)
         return errorType.DATA_INVALID
       }
@@ -347,6 +404,13 @@ export default class IMovFormat extends IFormat {
   ): Promise<int64> {
 
     assert(stream)
+
+    const now = formatContext.ioReader.getPos()
+
+    if (flags & AVSeekFlags.BYTE) {
+      await formatContext.ioReader.seek(timestamp)
+      return now
+    }
 
     const pts = timestamp
 
@@ -365,7 +429,7 @@ export default class IMovFormat extends IFormat {
       const seekTime = avRescaleQ(timestamp, stream.timeBase, AV_MILLI_TIME_BASE_Q)
       await formatContext.ioReader.seek(seekTime, true)
       resetFragment()
-      return 0n
+      return now
     }
 
     if (this.context.fragment) {
@@ -380,15 +444,18 @@ export default class IMovFormat extends IFormat {
           return 1
         })
         if (index > -1) {
+          if (index > 0 && streamContext.fragIndexes[index].time > pts) {
+            index--
+          }
           await formatContext.ioReader.seek(streamContext.fragIndexes[index].pos, true)
           resetFragment()
-          return 0n
+          return now
         }
       }
       if (pts === 0n && this.context.firstMoof) {
         await formatContext.ioReader.seek(this.context.firstMoof)
         resetFragment()
-        return 0n
+        return now
       }
       return static_cast<int64>(errorType.FORMAT_NOT_SUPPORT)
     }
@@ -458,7 +525,7 @@ export default class IMovFormat extends IFormat {
         }
       })
       this.firstAfterSeek = true
-      return 0n
+      return now
     }
     return static_cast<int64>(errorType.DATA_INVALID)
   }

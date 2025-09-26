@@ -4,9 +4,10 @@
  */
 
 import xml2Json from 'common/util/xml2Json'
-import { MPD, MPDMediaList, SegmentTemplate } from './type'
+import { MPD, MPDMediaList, Period, Protection, SegmentTemplate } from './type'
 import { Data } from 'common/types/type'
 import * as is from 'common/util/is'
+import * as object from 'common/util/object'
 import toString from 'common/function/toString'
 import getTimestamp from 'common/function/getTimestamp'
 
@@ -22,27 +23,24 @@ function parseMPD(xmlString: string) {
 }
 
 function durationConvert(value: string) {
-  let Hours = 0
-  let Minutes = 0
-  let Seconds = 0
-  value = value.slice(value.indexOf('PT') + 2)
-  if (value.indexOf('H') > -1 && value.indexOf('M') > -1 && value.indexOf('S') > -1) {
-    Hours = parseFloat(value.slice(0, value.indexOf('H')))
-    Minutes = parseFloat(value.slice(value.indexOf('H') + 1, value.indexOf('M')))
-    Seconds = parseFloat(value.slice(value.indexOf('M') + 1, value.indexOf('S')))
+  const regex = /^PT?(?:(\d+)Y)?(?:(\d+)D)?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/
+  const match = value.match(regex)
+  if (!match) {
+    throw new Error('Invalid DASH PT duration: ' + value)
   }
-  else if (value.indexOf('H') < 0 && value.indexOf('M') > 0 && value.indexOf('S') > -1) {
-    Minutes = parseFloat(value.slice(0, value.indexOf('M')))
-    Seconds = parseFloat(value.slice(value.indexOf('M') + 1, value.indexOf('S')))
-  }
-  else if (value.indexOf('H') < 0 && value.indexOf('M') < 0 && value.indexOf('S') > -1) {
-    Seconds = parseFloat(value.slice(0, value.indexOf('S')))
-  }
-  return Hours * 3600 + Minutes * 60 + Seconds
+  const [, year, day, hours, minutes, seconds] = match
+  return (
+    (parseInt(year || '0') * 3600 * 24 * 365) +
+    (parseInt(day || '0') * 3600 * 24) +
+    (parseInt(hours || '0') * 3600) +
+    (parseInt(minutes || '0') * 60) +
+    parseFloat(seconds || '0')
+  )
 }
 
 function preFixInteger(num: number, n: number) {
-  return (Array(n).join('0') + num).slice(-n)
+  const str = toString(num)
+  return str.length >= n ? str : '0'.repeat(n - str.length) + str
 }
 
 function parseRational(value: string) {
@@ -56,9 +54,51 @@ function parseRational(value: string) {
   return parseFloat(value)
 }
 
-export default function parser(xml: string, url: string) {
+function uuid2Uint8Array(s: string) {
+  s = s.replaceAll('-', '')
+  const r: number[] = []
+  for (let i = 0; i < s.length; i += 2) {
+    r.push(+`0x${s.substring(i, i + 2)}`)
+  }
+  return new Uint8Array(r)
+}
+
+function parseProtection(protection: Data[]) {
+  let result: Protection = {}
+  protection.forEach((item) => {
+    const obj: Data = {}
+    object.each(item, (value, key) => {
+      obj[key.toLocaleLowerCase()] = value
+    })
+    if (obj['cenc:default_kid']) {
+      result.kid = uuid2Uint8Array(obj['cenc:default_kid'])
+      result.scheme = obj.value
+    }
+    if (obj['schemeiduri']) {
+      const url: string[] = obj['schemeiduri'].split(':')
+      if (url.length === 3 && url[0] === 'urn' && url[1] === 'uuid') {
+        result.systemId = uuid2Uint8Array(url[2])
+      }
+    }
+    if (obj['clearkey:laurl']) {
+      result.url = obj['clearkey:laurl'].value
+    }
+    if (obj['dashif:laurl']) {
+      result.url = obj['dashif:laurl'].value
+    }
+  })
+  return result
+}
+
+function joinPath(base: string, path: string) {
+  if (/^https?:\/\//.test(path)) {
+    return path
+  }
+  return base + path
+}
+
+function parsePeriod(result: MPD, period: Period, url: string) {
   const list: MPDMediaList = {
-    source: xml,
     mediaList: {
       audio: [],
       video: [],
@@ -70,12 +110,12 @@ export default function parser(xml: string, url: string) {
     minBufferTime: 0,
     maxSegmentDuration: 0,
     minimumUpdatePeriod: 0,
+    timeShiftBufferDepth: 0,
     timestamp: getTimestamp()
   }
 
   const repID = []
 
-  const result = parseMPD(xml).MPD
   if (result.type === 'static') {
     list.type = 'vod'
     list.isEnd = true
@@ -88,45 +128,56 @@ export default function parser(xml: string, url: string) {
     list.maxSegmentDuration = durationConvert(result.maxSegmentDuration)
   }
   if (result.minimumUpdatePeriod) {
-    list.minimumUpdatePeriod = durationConvert(result.minimumUpdatePeriod)
+    list.minimumUpdatePeriod = Math.min(durationConvert(result.minimumUpdatePeriod), Math.max(list.maxSegmentDuration, 2) * 30)
+  }
+  if (result.availabilityStartTime) {
+    list.availabilityStartTime = new Date(result.availabilityStartTime).getTime()
+  }
+  if (result.timeShiftBufferDepth) {
+    list.timeShiftBufferDepth = durationConvert(result.timeShiftBufferDepth)
   }
   if (result.mediaPresentationDuration) {
     list.duration = durationConvert(result.mediaPresentationDuration)
   }
   let MpdBaseURL = ''
   if (result.BaseURL) {
-    MpdBaseURL = is.string(result.BaseURL) ? result.BaseURL : result.BaseURL.value
+    MpdBaseURL = is.array(result.BaseURL) ? result.BaseURL[0].value : (is.string(result.BaseURL) ? result.BaseURL : result.BaseURL.value)
   }
-  const Period = is.array(result.Period) ? result.Period[0] : result.Period
-  if (!list.duration && Period && Period.duration) {
-    list.duration = durationConvert(Period.duration)
+  if (period?.duration) {
+    list.duration = durationConvert(period.duration)
+  }
+  if (period.BaseURL) {
+    MpdBaseURL = joinPath(MpdBaseURL, is.string(period.BaseURL) ? period.BaseURL : period.BaseURL.value)
   }
 
-  const AdaptationSet = is.array(Period.AdaptationSet) ? Period.AdaptationSet : [Period.AdaptationSet]
+  const AdaptationSet = is.array(period.AdaptationSet) ? period.AdaptationSet : [period.AdaptationSet]
 
   AdaptationSet.forEach((asItem, asIndex) => {
-    let mimeType = 'video/mp4'
-    let codecs = 'avc1.64001E'
-    let width = 640
-    let height = 360
-    let maxWidth = 640
-    let maxHeight = 360
-    let frameRate = 25
+    let mimeType = ''
+    let contentType = ''
+    let codecs = ''
+    let width = 0
+    let height = 0
+    let maxWidth = 0
+    let maxHeight = 0
+    let frameRate = 0
     let sar = '1:1'
     let startWithSAP = '1'
-    let bandwidth = 588633
+    let bandwidth = 0
     let adaptationSetBaseUrl = MpdBaseURL
     let lang = 'und'
+    let protection: Protection
     if (asItem.BaseURL) {
-      adaptationSetBaseUrl += asItem.BaseURL
+      adaptationSetBaseUrl = joinPath(adaptationSetBaseUrl, is.string(asItem.BaseURL) ? asItem.BaseURL : asItem.BaseURL.value)
     }
     if (asItem.lang) {
       lang = asItem.lang
     }
 
-    if (asItem.mimeType) {
+    if (asItem.mimeType || asItem.contentType) {
       mimeType = asItem.mimeType
-      if (mimeType === 'video/mp4') {
+      contentType = asItem.contentType
+      if (mimeType === 'video/mp4' || contentType === 'video') {
         codecs = asItem.codecs
         width = parseFloat(asItem.width)
         height = parseFloat(asItem.height)
@@ -143,7 +194,7 @@ export default function parser(xml: string, url: string) {
         startWithSAP = asItem.startWithSAP
         bandwidth = parseFloat(asItem.bandwidth)
       }
-      else if (mimeType === 'audio/mp4') {
+      else if (mimeType === 'audio/mp4' || contentType === 'audio') {
         codecs = asItem.codecs
         startWithSAP = asItem.startWithSAP
         bandwidth = parseFloat(asItem.bandwidth)
@@ -161,6 +212,10 @@ export default function parser(xml: string, url: string) {
       }
     }
 
+    if (asItem.ContentProtection) {
+      protection = parseProtection(asItem.ContentProtection)
+    }
+
     const Representation = is.array(asItem.Representation) ? asItem.Representation : [asItem.Representation]
 
     Representation.forEach((rItem, rIndex: number) => {
@@ -171,12 +226,12 @@ export default function parser(xml: string, url: string) {
       let initSegment = ''
       const mediaSegments = []
       let timescale = 0
-      let duration = 0
-      let baseURL = url.slice(0, url.lastIndexOf('/') + 1) + adaptationSetBaseUrl
+      let duration = list.duration
+      let baseURL = joinPath(url.slice(0, url.lastIndexOf('/') + 1), adaptationSetBaseUrl)
       if (rItem.mimeType) {
         mimeType = rItem.mimeType
       }
-      if (mimeType === 'video/mp4') {
+      if (mimeType === 'video/mp4' || contentType === 'video') {
         if (rItem.codecs) {
           codecs = rItem.codecs
         }
@@ -217,14 +272,13 @@ export default function parser(xml: string, url: string) {
         }
       }
       if (rItem.BaseURL) {
-        baseURL += rItem.BaseURL
+        baseURL = joinPath(baseURL, is.string(rItem.BaseURL) ? rItem.BaseURL : rItem.BaseURL.value)
       }
-      let encrypted = false
-      if (asItem.ContentProtection || rItem.ContentProtection) {
-        encrypted = true
+      if (rItem.ContentProtection) {
+        protection = parseProtection(rItem.ContentProtection)
       }
       if (rItem.SegmentBase) {
-        if (mimeType === 'video/mp4') {
+        if (mimeType === 'video/mp4' || contentType === 'video') {
           list.mediaList.video.push({
             id: rItem.id,
             file: baseURL,
@@ -240,10 +294,10 @@ export default function parser(xml: string, url: string) {
             bandwidth,
             timescale,
             duration,
-            encrypted
+            protection
           })
         }
-        else if (mimeType === 'audio/mp4') {
+        else if (mimeType === 'audio/mp4' || contentType === 'audio') {
           list.mediaList.audio.push({
             id: rItem.id,
             file: baseURL,
@@ -253,11 +307,11 @@ export default function parser(xml: string, url: string) {
             bandwidth,
             timescale,
             duration,
-            encrypted,
+            protection,
             lang
           })
         }
-        else if (mimeType === 'application/mp4') {
+        else if (mimeType === 'application/mp4' || contentType === 'text') {
           list.mediaList.subtitle.push({
             id: rItem.id,
             file: baseURL,
@@ -267,7 +321,7 @@ export default function parser(xml: string, url: string) {
             bandwidth,
             timescale,
             duration,
-            encrypted,
+            protection,
             lang
           })
         }
@@ -282,18 +336,33 @@ export default function parser(xml: string, url: string) {
         }
 
         if (ST) {
-          const start = parseInt(ST.startNumber)
+          let start = ST.startNumber ? parseInt(ST.startNumber) : 1
           initSegment = ST.initialization
           timescale = parseFloat(ST.timescale || '1')
 
           if (ST.duration && !ST.SegmentTimeline) {
             duration = parseFloat(ST.duration)
             let segmentDuration = duration / timescale
-            const end = start + Math.ceil((list.duration || segmentDuration) / segmentDuration) - 1
+            let end = start + Math.ceil((list.duration || segmentDuration) / segmentDuration) - 1
+            let generateIndex = end
+            if (list.type === 'live' && (is.number(list.availabilityStartTime) || ST.presentationTimeOffset)) {
+              const now = list.timestamp || getTimestamp()
+              const startTs = list.availabilityStartTime
+              const elapsed = ((now - startTs) / 1000) - (ST.presentationTimeOffset ? parseInt(ST.presentationTimeOffset) : 0)
+              const segmentOffset = Math.floor(elapsed / segmentDuration)
+              end = start + segmentOffset
+              if (list.timeShiftBufferDepth) {
+                start = end - Math.ceil(list.timeShiftBufferDepth / segmentDuration) + 1
+              }
+              generateIndex = end
+              if (ST.availabilityTimeComplete === 'false' || list.minimumUpdatePeriod > list.minBufferTime * 2) {
+                end += Math.ceil(list.minimumUpdatePeriod / segmentDuration)
+              }
+            }
             for (let i = start; i <= end; i++) {
               const startTime = segmentDuration * (i - start)
               let endTime = segmentDuration * (i - start + 1)
-              if (i === end) {
+              if (i === end && list.duration) {
                 segmentDuration = list.duration - segmentDuration * (end - start)
                 endTime = list.duration
               }
@@ -307,7 +376,8 @@ export default function parser(xml: string, url: string) {
                   }
                   return toString(i)
                 }),
-                segmentDuration
+                segmentDuration,
+                pending: i > generateIndex
               })
             }
           }
@@ -318,12 +388,18 @@ export default function parser(xml: string, url: string) {
             for (let i = 0; i < S.length; i++) {
               let d = parseFloat(S[i].d)
               if (S[i].t) {
-                startTime = parseFloat(S[0].t)
+                startTime = parseFloat(S[i].t)
               }
 
               let r = 1
               if (S[i].r) {
-                r = parseInt(S[i].r) + 1
+                r = parseInt(S[i].r)
+                if (r === -1 && duration) {
+                  r = Math.ceil(duration * timescale / d)
+                }
+                else {
+                  r += 1
+                }
               }
               for (let j = 0; j < r; j++) {
                 mediaSegments.push({
@@ -362,7 +438,7 @@ export default function parser(xml: string, url: string) {
           }
         }
 
-        if (mimeType === 'video/mp4') {
+        if (mimeType === 'video/mp4' || contentType === 'video') {
           list.mediaList.video.push({
             id: rItem.id,
             baseURL,
@@ -380,10 +456,10 @@ export default function parser(xml: string, url: string) {
             bandwidth,
             timescale,
             duration,
-            encrypted
+            protection
           })
         }
-        else if (mimeType === 'audio/mp4') {
+        else if (mimeType === 'audio/mp4' || contentType === 'audio') {
           list.mediaList.audio.push({
             id: rItem.id,
             baseURL,
@@ -395,11 +471,11 @@ export default function parser(xml: string, url: string) {
             bandwidth,
             timescale,
             duration,
-            encrypted,
+            protection,
             lang
           })
         }
-        else if (mimeType === 'application/mp4') {
+        else if (mimeType === 'application/mp4' || contentType === 'text') {
           list.mediaList.subtitle.push({
             id: rItem.id,
             baseURL,
@@ -411,7 +487,7 @@ export default function parser(xml: string, url: string) {
             bandwidth,
             timescale,
             duration,
-            encrypted,
+            protection,
             lang
           })
         }
@@ -426,4 +502,77 @@ export default function parser(xml: string, url: string) {
   })
 
   return list
+}
+
+export default function parser(xml: string, url: string) {
+  const result = parseMPD(xml).MPD
+  if (result.type === 'dynamic') {
+    const period = is.array(result.Period) ? result.Period[result.Period.length - 1] : result.Period
+    return parsePeriod(result, period, url)
+  }
+  else {
+    const periods = is.array(result.Period) ? result.Period : [result.Period]
+    const list = periods.map((period) => {
+      return parsePeriod(result, period, url)
+    })
+    const mediaList: MPDMediaList = list[0]
+    for (let i = 1; i < list.length; i++) {
+      mediaList.duration += list[i].duration
+      list[i].mediaList.video.forEach((video) => {
+        const prev = mediaList.mediaList.video.find((p) => {
+          return video.initSegment && video.initSegment === p.initSegment || video.id === p.id
+        })
+        if (prev) {
+          if (prev.mediaSegments?.length && video.mediaSegments?.length) {
+            video.mediaSegments.forEach((s) => {
+              s.start += prev.mediaSegments[prev.mediaSegments.length - 1].end
+              s.end += prev.mediaSegments[prev.mediaSegments.length - 1].end
+            })
+          }
+          prev.mediaSegments = (prev.mediaSegments || []).concat(video.mediaSegments || [])
+        }
+        else {
+          mediaList.mediaList.video.push(video)
+        }
+      })
+      list[i].mediaList.audio.forEach((audio) => {
+        const prev = mediaList.mediaList.audio.find((p) => {
+          return audio.initSegment && audio.initSegment === p.initSegment || audio.id === p.id
+        })
+        if (prev) {
+          if (prev.mediaSegments?.length && audio.mediaSegments?.length) {
+            audio.mediaSegments.forEach((s) => {
+              s.start += prev.mediaSegments[prev.mediaSegments.length - 1].end
+              s.end += prev.mediaSegments[prev.mediaSegments.length - 1].end
+            })
+          }
+          prev.mediaSegments = (prev.mediaSegments || []).concat(audio.mediaSegments || [])
+        }
+        else {
+          mediaList.mediaList.audio.push(audio)
+        }
+      })
+      list[i].mediaList.subtitle.forEach((subtitle) => {
+        const prev = mediaList.mediaList.subtitle.find((p) => {
+          return subtitle.initSegment && subtitle.initSegment === p.initSegment || subtitle.id === p.id
+        })
+        if (prev) {
+          if (prev.mediaSegments?.length && subtitle.mediaSegments?.length) {
+            subtitle.mediaSegments.forEach((s) => {
+              s.start += prev.mediaSegments[prev.mediaSegments.length - 1].end
+              s.end += prev.mediaSegments[prev.mediaSegments.length - 1].end
+            })
+          }
+          prev.mediaSegments = (prev.mediaSegments || []).concat(subtitle.mediaSegments || [])
+        }
+        else {
+          mediaList.mediaList.subtitle.push(subtitle)
+        }
+      })
+    }
+    if (result.mediaPresentationDuration) {
+      mediaList.duration = durationConvert(result.mediaPresentationDuration)
+    }
+    return mediaList
+  }
 }

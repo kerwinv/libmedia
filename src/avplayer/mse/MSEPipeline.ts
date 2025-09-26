@@ -26,13 +26,12 @@
 import { createAVOFormatContext, AVOFormatContext } from 'avformat/AVFormatContext'
 import Pipeline, { TaskOptions } from 'avpipeline/Pipeline'
 import * as errorType from 'avutil/error'
-import IPCPort from 'common/network/IPCPort'
+import IPCPort, { NOTIFY, RpcMessage } from 'common/network/IPCPort'
 import * as logger from 'common/util/logger'
 import OFormat from 'avformat/formats/OFormat'
 import IOWriter from 'common/io/IOWriterSync'
 import * as mux from 'avformat/mux'
-import OMovFormat from 'avformat/formats/OMovFormat'
-import { FragmentMode, MovMode } from 'avformat/formats/mov/mov'
+import OMovFormat, { MovFragmentMode, MovMode } from 'avformat/formats/OMovFormat'
 import AVCodecParameters from 'avutil/struct/avcodecparameters'
 import { Rational } from 'avutil/struct/rational'
 import { copyCodecParameters, freeCodecParameters } from 'avutil/util/codecparameters'
@@ -49,7 +48,7 @@ import getTimestamp from 'common/function/getTimestamp'
 import getAudioMimeType from 'avrender/track/function/getAudioMimeType'
 import getVideoMimeType from 'avrender/track/function/getVideoMimeType'
 import SeekableWriteBuffer from 'common/io/SeekableWriteBuffer'
-import { addAVPacketData, getAVPacketSideData, refAVPacket } from 'avutil/util/avpacket'
+import { addAVPacketData, addAVPacketSideData, getAVPacketSideData, hasAVPacketSideData, refAVPacket } from 'avutil/util/avpacket'
 import { mapUint8Array, memcpy, memcpyFromUint8Array } from 'cheap/std/memory'
 import { avFree, avMalloc, avMallocz } from 'avutil/util/mem'
 import browser from 'common/util/browser'
@@ -69,6 +68,8 @@ import isPointer from 'cheap/std/function/isPointer'
 import * as is from 'common/util/is'
 import os from 'common/util/os'
 import { MPEG4AudioObjectTypes } from 'avutil/codecs/aac'
+import WorkerTimer from 'common/timer/WorkerTimer'
+import { Data } from 'common/types/type'
 import { AVStreamMetadataKey } from 'avutil/AVStream'
 
 export interface MSETaskOptions extends TaskOptions {
@@ -119,6 +120,8 @@ interface MSEResource {
   enableRawMpeg: boolean
 
   timestampOffsetUpdated: boolean
+
+  ignoreEncryption: boolean
 }
 
 type SelfTask = MSETaskOptions & {
@@ -142,6 +145,9 @@ type SelfTask = MSETaskOptions & {
   avpacketPool: AVPacketPool
   maxBuffer: float
   minBuffer: float
+
+  visibilityHidden: boolean
+  fakePlayTimer: WorkerTimer
 }
 
 function checkExtradataChanged(old: pointer<uint8>, oldSize: int32, newer: pointer<uint8>, newSize: int32) {
@@ -170,6 +176,7 @@ export default class MSEPipeline extends Pipeline {
   private async syncToKeyframe(task: SelfTask) {
     let firstIsKeyframe = true
     if (task.video) {
+      let audioNewExtradata: Uint8Array
       // 寻找下一个关键帧
       while (true) {
         task.video.backPacket = await this.pullAVPacket(task.video, task)
@@ -188,6 +195,10 @@ export default class MSEPipeline extends Pipeline {
         ) {
           while (true) {
             if (task.audio.backPacket > 0) {
+              const extradata = getAVPacketSideData(task.audio.backPacket, AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA)
+              if (extradata) {
+                audioNewExtradata = mapUint8Array(extradata.data, reinterpret_cast<size>(extradata.size)).slice()
+              }
               task.avpacketPool.release(task.audio.backPacket)
             }
             task.audio.backPacket = await this.pullAVPacket(task.audio, task)
@@ -225,6 +236,15 @@ export default class MSEPipeline extends Pipeline {
         }
         firstIsKeyframe = false
         task.avpacketPool.release(task.video.backPacket)
+      }
+
+      if (task.audio.backPacket
+        && !hasAVPacketSideData(task.audio.backPacket, AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA)
+        && audioNewExtradata
+      ) {
+        const extradata = avMalloc(audioNewExtradata.length)
+        memcpyFromUint8Array(extradata, audioNewExtradata.length, audioNewExtradata)
+        addAVPacketSideData(task.audio.backPacket, AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA, extradata, audioNewExtradata.length)
       }
     }
     return firstIsKeyframe
@@ -445,24 +465,72 @@ export default class MSEPipeline extends Pipeline {
     return mediaSource.addSourceBuffer(this.getMimeType(codecpar))
   }
 
-  // TODO avpacket extradata 混入码流
-  private mixExtradata(avpacket: pointer<AVPacket>, resource: MSEResource, extradata: pointer<uint8>, extradataSize: int32) {
-    const codecId = resource.oformatContext.streams[0].codecpar.codecId
-    if (codecId === AVCodecID.AV_CODEC_ID_H264
-      || codecId === AVCodecID.AV_CODEC_ID_H265
-      || codecId === AVCodecID.AV_CODEC_ID_AAC
-    ) {
-
-    }
-
+  private mixExtradata(resource: MSEResource, extradata: pointer<uint8>, extradataSize: int32) {
     const codecpar = resource.oformatContext.streams[0].codecpar
-
     if (codecpar.extradata) {
       avFree(codecpar.extradata)
     }
     codecpar.extradata = avMalloc(reinterpret_cast<size>(extradataSize))
     memcpy(codecpar.extradata, extradata, reinterpret_cast<size>(extradataSize))
     codecpar.extradataSize = extradataSize
+
+    if (codecpar.codecId === AVCodecID.AV_CODEC_ID_H264) {
+      h264.parseAVCodecParameters(resource.oformatContext.streams[0], mapUint8Array(extradata, reinterpret_cast<size>(extradataSize)))
+    }
+    else if (codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC) {
+      hevc.parseAVCodecParameters(resource.oformatContext.streams[0], mapUint8Array(extradata, reinterpret_cast<size>(extradataSize)))
+    }
+
+    resource.track.changeMimeType(
+      this.getMimeType(addressof(codecpar)),
+      resource.enableRawMpeg ? 'sequence' : 'segments'
+    )
+    const oformat = new OMovFormat({
+      fragmentMode: MovFragmentMode.FRAME,
+      fragment: true,
+      fastOpen: true,
+      movMode: MovMode.MP4,
+      defaultBaseIsMoof: true,
+      reverseSpsInAvcc: true,
+      hasTfra: false
+    })
+    resource.oformatContext.oformat = oformat
+    resource.timestampOffsetUpdated = false
+    if (!resource.enableRawMpeg) {
+      mux.open(resource.oformatContext)
+      mux.writeHeader(resource.oformatContext)
+    }
+  }
+
+  private checkEnableEncryption(resource: MSEResource, avpacket: pointer<AVPacket>) {
+    if (resource.oformatContext.streams[0].metadata[AVStreamMetadataKey.ENCRYPTION]) {
+      const hasCenc = hasAVPacketSideData(avpacket, AVPacketSideDataType.AV_PKT_DATA_ENCRYPTION_INFO)
+      if (!hasCenc && !resource.ignoreEncryption
+        || hasCenc && resource.ignoreEncryption
+      ) {
+        resource.track.changeMimeType(
+          this.getMimeType(addressof(resource.oformatContext.streams[0].codecpar)),
+          resource.enableRawMpeg ? 'sequence' : 'segments'
+        )
+        const oformat = new OMovFormat({
+          fragmentMode: MovFragmentMode.FRAME,
+          fragment: true,
+          fastOpen: true,
+          movMode: MovMode.MP4,
+          defaultBaseIsMoof: true,
+          reverseSpsInAvcc: true,
+          ignoreEncryption: !hasCenc,
+          hasTfra: false
+        })
+        resource.ignoreEncryption = !hasCenc
+        resource.oformatContext.oformat = oformat
+        resource.timestampOffsetUpdated = false
+        if (!resource.enableRawMpeg) {
+          mux.open(resource.oformatContext)
+          mux.writeHeader(resource.oformatContext)
+        }
+      }
+    }
   }
 
   private async pullAVPacketInternal(task: SelfTask, leftIPCPort: IPCPort) {
@@ -609,6 +677,21 @@ export default class MSEPipeline extends Pipeline {
       resource.bufferQueue.write(mapUint8Array(avpacket.data, reinterpret_cast<size>(avpacket.size)).slice())
     }
     else {
+      if (resource.type === 'video'
+        && (avpacket.flags & AVPacketFlags.AV_PKT_FLAG_KEY)
+        || resource.type === 'audio'
+      ) {
+        const extradata = getAVPacketSideData(avpacket, AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA)
+        if (extradata && checkExtradataChanged(
+          resource.oformatContext.streams[0].codecpar.extradata,
+          resource.oformatContext.streams[0].codecpar.extradataSize,
+          extradata.data,
+          static_cast<int32>(extradata.size)
+        )) {
+          this.mixExtradata(resource, extradata.data, static_cast<int32>(extradata.size))
+        }
+      }
+      this.checkEnableEncryption(resource, avpacket)
       mux.writeAVPacket(resource.oformatContext, avpacket)
       if (flush) {
         resource.oformatContext.ioWriter.flush()
@@ -734,16 +817,6 @@ export default class MSEPipeline extends Pipeline {
 
         avpacket.streamIndex = resource.oformatContext.streams[0].index
 
-        const extradata = getAVPacketSideData(avpacket, AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA)
-        if (extradata && checkExtradataChanged(
-          resource.oformatContext.streams[0].codecpar.extradata,
-          resource.oformatContext.streams[0].codecpar.extradataSize,
-          extradata.data,
-          static_cast<int32>(extradata.size)
-        )) {
-          this.mixExtradata(avpacket, resource, extradata.data, static_cast<int32>(extradata.size))
-        }
-
         this.writeAVPacket(avpacket, resource, true)
 
         resource.track.addBuffer(resource.bufferQueue.flush())
@@ -826,18 +899,6 @@ export default class MSEPipeline extends Pipeline {
         startPTS = avpacket.pts
       }
 
-      if (task.video && task.video.streamIndex === avpacket.streamIndex) {
-        const extradata = getAVPacketSideData(avpacket, AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA)
-        if (extradata && checkExtradataChanged(
-          resource.oformatContext.streams[0].codecpar.extradata,
-          resource.oformatContext.streams[0].codecpar.extradataSize,
-          extradata.data,
-          static_cast<int32>(extradata.size)
-        )) {
-          this.mixExtradata(avpacket, resource, extradata.data, static_cast<int32>(extradata.size))
-        }
-      }
-
       avpacket.streamIndex = resource.oformatContext.streams[0].index
 
       this.writeAVPacket(avpacket, resource)
@@ -857,11 +918,13 @@ export default class MSEPipeline extends Pipeline {
     resource.bufferQueue.flush()
     resource.oformatContext.oformat.destroy(resource.oformatContext)
     const oformat = new OMovFormat({
-      fragmentMode: FragmentMode.FRAME,
+      fragmentMode: MovFragmentMode.FRAME,
       fragment: true,
       fastOpen: true,
       movMode: MovMode.MP4,
-      defaultBaseIsMoof: true
+      defaultBaseIsMoof: true,
+      reverseSpsInAvcc: true,
+      hasTfra: false
     })
     resource.oformatContext.oformat = oformat
 
@@ -912,9 +975,9 @@ export default class MSEPipeline extends Pipeline {
     streamIndex: int32,
     parameters: pointer<AVCodecParameters> | AVCodecParametersSerialize,
     timeBase: Rational,
+    metadata: Data,
     startPTS: int64,
-    pullIPCPort: MessagePort,
-    matrix?: number[]
+    pullIPCPort: MessagePort
   ) {
     const task = this.tasks.get(taskId)
     if (task) {
@@ -929,11 +992,13 @@ export default class MSEPipeline extends Pipeline {
       const ioWriter = new IOWriter(1024 * 1024)
       const oformatContext = createAVOFormatContext()
       const oformat = new OMovFormat({
-        fragmentMode: FragmentMode.FRAME,
+        fragmentMode: MovFragmentMode.FRAME,
         fragment: true,
         fastOpen: true,
         movMode: MovMode.MP4,
-        defaultBaseIsMoof: true
+        defaultBaseIsMoof: true,
+        reverseSpsInAvcc: true,
+        hasTfra: false
       })
 
       const bufferQueue = new SeekableWriteBuffer()
@@ -949,12 +1014,10 @@ export default class MSEPipeline extends Pipeline {
 
       const stream = oformatContext.createStream()
       copyCodecParameters(addressof(stream.codecpar), codecpar)
+      stream.metadata = metadata
 
       if (codecpar.codecId === AVCodecID.AV_CODEC_ID_MP3) {
         stream.codecpar.codecTag = mktag('.mp3')
-      }
-      if (matrix) {
-        stream.metadata[AVStreamMetadataKey.MATRIX] = matrix
       }
 
       const useSampleRateTimeBase = codecpar.codecType === AVMediaType.AVMEDIA_TYPE_AUDIO
@@ -1010,7 +1073,8 @@ export default class MSEPipeline extends Pipeline {
           useSampleRateTimeBase
         },
         enableRawMpeg: codecpar.codecId === AVCodecID.AV_CODEC_ID_MP3 && !browser.firefox,
-        timestampOffsetUpdated: false
+        timestampOffsetUpdated: false,
+        ignoreEncryption: false
       }
 
       track.onQuotaExceededError = () => {
@@ -1051,8 +1115,8 @@ export default class MSEPipeline extends Pipeline {
     streamIndex: int32,
     parameters: pointer<AVCodecParameters> | AVCodecParametersSerialize,
     timeBase: Rational,
-    startPTS: int64,
-    matrix?: number[]
+    metadata: Data,
+    startPTS: int64
   ) {
     const task = this.tasks.get(taskId)
     if (task) {
@@ -1080,11 +1144,13 @@ export default class MSEPipeline extends Pipeline {
         resource.track.reset()
 
         const oformat = new OMovFormat({
-          fragmentMode: FragmentMode.FRAME,
+          fragmentMode: MovFragmentMode.FRAME,
           fragment: true,
           fastOpen: true,
           movMode: MovMode.MP4,
-          defaultBaseIsMoof: true
+          defaultBaseIsMoof: true,
+          reverseSpsInAvcc: true,
+          hasTfra: false
         })
         resource.oformatContext.oformat = oformat
 
@@ -1097,12 +1163,10 @@ export default class MSEPipeline extends Pipeline {
 
         const stream = resource.oformatContext.streams[0]
         copyCodecParameters(addressof(stream.codecpar), codecpar)
+        stream.metadata = metadata
 
         if (codecpar.codecId === AVCodecID.AV_CODEC_ID_MP3) {
           stream.codecpar.codecTag = mktag('.mp3')
-        }
-        if (matrix) {
-          stream.metadata[AVStreamMetadataKey.MATRIX] = matrix
         }
 
         const useSampleRateTimeBase = codecpar.codecType === AVMediaType.AVMEDIA_TYPE_AUDIO
@@ -1121,7 +1185,21 @@ export default class MSEPipeline extends Pipeline {
           stream.timeBase.den = timeBase.den
           stream.timeBase.num = timeBase.num
         }
-        resource.track.changeMimeType(this.getMimeType(addressof(stream.codecpar)))
+        resource.enableRawMpeg = codecpar.codecId === AVCodecID.AV_CODEC_ID_MP3 && !browser.firefox
+        resource.timestampOffsetUpdated = false
+        resource.pullQueue.useSampleRateTimeBase = useSampleRateTimeBase
+        try {
+          resource.track.changeMimeType(
+            this.getMimeType(addressof(stream.codecpar)),
+            resource.enableRawMpeg ? 'sequence' : 'segments'
+          )
+        }
+        catch (error) {
+          // firefox 会报这个错，但不影响播放，这里忽略
+          if (!browser.firefox || error.message.indexOf('An attempt was made to use an object that is not') < 0) {
+            throw error
+          }
+        }
         if (!resource.enableRawMpeg) {
           mux.open(resource.oformatContext)
           mux.writeHeader(resource.oformatContext)
@@ -1148,6 +1226,9 @@ export default class MSEPipeline extends Pipeline {
       task.pauseTimestamp = getTimestamp()
       task.audio?.loop.stop()
       task.video?.loop.stop()
+      if (task.fakePlayTimer) {
+        task.fakePlayTimer.stop()
+      }
 
       logger.debug(`pause taskId: ${taskId}`)
     }
@@ -1174,6 +1255,9 @@ export default class MSEPipeline extends Pipeline {
           task.video.startTimestamp += static_cast<int64>(getTimestamp() - task.pauseTimestamp)
           task.video.loop.start()
         }
+      }
+      if (task.fakePlayTimer) {
+        task.fakePlayTimer.start()
       }
       logger.debug(`unpause taskId: ${taskId}`)
     }
@@ -1669,6 +1753,17 @@ export default class MSEPipeline extends Pipeline {
     }
   }
 
+  public async isManagedMediaSource(taskId: string) {
+    const task = this.tasks.get(taskId)
+    if (task) {
+      return typeof ManagedMediaSource === 'function'
+        && task.mediaSource instanceof ManagedMediaSource
+    }
+    else {
+      logger.fatal('task not found')
+    }
+  }
+
   private createTask(options: MSETaskOptions, startTimestamp: int64): number {
 
     const controlIPCPort = new IPCPort(options.controlPort)
@@ -1690,13 +1785,52 @@ export default class MSEPipeline extends Pipeline {
       cacheDuration: static_cast<int64>(0.5 * 1000),
       avpacketPool: new AVPacketPoolImpl(accessof(options.avpacketList), options.avpacketListMutex),
       maxBuffer: options.isLive ? 1 : 4,
-      minBuffer: options.isLive ? 0.5 : 2
+      minBuffer: options.isLive ? 0.5 : 2,
+      visibilityHidden: false,
+      fakePlayTimer: null
     }
     this.tasks.set(options.taskId, task)
 
     mediaSource.onsourceopen = this.getSourceOpenHandler(task, startTimestamp)
 
+    controlIPCPort.on(NOTIFY, (message: RpcMessage) => {
+      if (message.method === 'visibilitychange') {
+        this.setVisibilityHidden(options.taskId, message.params.visibilityHidden)
+      }
+    })
+
     return 0
+  }
+
+  public async setVisibilityHidden(taskId: string, visibilityHidden: boolean) {
+    const task = this.tasks.get(taskId)
+    if (task) {
+      task.visibilityHidden = visibilityHidden
+      if (visibilityHidden) {
+        if (task.isLive && task.video && !task.audio) {
+          if (task.fakePlayTimer) {
+            task.fakePlayTimer.destroy()
+          }
+          task.fakePlayTimer = new WorkerTimer(() => {
+            this.setCurrentTime(task.taskId, task.currentTime + (getTimestamp() - task.currentTimeNTP) / 1000)
+          }, 0, 1000)
+          task.fakePlayTimer.start()
+        }
+      }
+      else {
+        if (task.fakePlayTimer) {
+          task.fakePlayTimer.destroy()
+          task.fakePlayTimer = null
+          const cachedTime = task.video.track.getBufferedTime()
+          if (cachedTime > (task.isLive ? 2 : 4)) {
+            this.setCurrentTime(task.taskId, Math.max(task.video.track.getBufferedEnd() - (task.isLive ? 1 : 4), task.video.track.getBufferedStart()))
+            task.controlIPCPort.notify('seek', {
+              time: task.currentTime
+            })
+          }
+        }
+      }
+    }
   }
 
   public async registerTask(options: MSETaskOptions, startTimestamp: int64 = 0n): Promise<number> {

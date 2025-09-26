@@ -32,7 +32,7 @@ import * as logger from 'common/util/logger'
 import { avRescaleQ2 } from 'avutil/util/rational'
 import { createAVPacket, destroyAVPacket, getAVPacketData, getAVPacketSideData, hasAVPacketSideData } from 'avutil/util/avpacket'
 import * as object from 'common/util/object'
-import { OMatroskaContext, TrackEntry } from './matroska/type'
+import { Attachment, ChapterAtom, OMatroskaContext, TrackEntry } from './matroska/type'
 import IOWriterSync from 'common/io/IOWriterSync'
 import * as omatroska from './matroska/omatroska'
 import { EBMLId, MATROSKATrackType, MkvTag2CodecId, WebmTag2CodecId } from './matroska/matroska'
@@ -52,9 +52,18 @@ import * as vvc from 'avutil/codecs/vvc'
 import * as intread from 'avutil/util/intread'
 import { Uint8ArrayInterface } from 'common/io/interface'
 import { AVStreamMetadataKey } from 'avutil/AVStream'
+import * as errorType from 'avutil/error'
+import * as is from 'common/util/is'
+import getTimestamp from 'common/function/getTimestamp'
 
 export interface OMatroskaFormatOptions {
+  /**
+   * 是否是直播
+   */
   isLive?: boolean
+  /**
+   * mkv 还是 webm 
+   */
   docType?: string
 }
 
@@ -126,8 +135,8 @@ export default class OMatroskaFormat extends OFormat {
         entry: []
       },
       info: {
-        muxingApp: defined(VERSION),
-        writingApp: defined(VERSION),
+        muxingApp: `libmedia-${defined(VERSION)}`,
+        writingApp: formatContext.metadata[AVStreamMetadataKey.ENCODER] ?? `libmedia-${defined(VERSION)}`,
         timestampScale: 1000000,
         duration: 0,
         segmentUUID: -1n
@@ -145,14 +154,7 @@ export default class OMatroskaFormat extends OFormat {
         entry: []
       },
       tags: {
-        entry: [
-          {
-            tag: {
-              name: 'ENCODER',
-              string: defined(VERSION)
-            }
-          }
-        ]
+        entry: []
       },
 
       elePositionInfos: [],
@@ -163,6 +165,20 @@ export default class OMatroskaFormat extends OFormat {
         pos: -1n
       },
       hasVideo: false
+    }
+
+    if (formatContext.metadata[AVStreamMetadataKey.TITLE]) {
+      context.info.title = formatContext.metadata[AVStreamMetadataKey.TITLE]
+    }
+    let ts = getTimestamp()
+    if (formatContext.metadata[AVStreamMetadataKey.CREATION_TIME]) {
+      ts = (new Date(formatContext.metadata[AVStreamMetadataKey.CREATION_TIME])).getTime()
+    }
+    this.randomView.setBigUint64(0, BigInt(ts - 978307200000) * 1000000n)
+    context.info.dateUTC = {
+      data: this.random.slice(),
+      size: 8n,
+      pos: NOPTS_VALUE_BIGINT
     }
 
     if (context.header.docType === 'webm') {
@@ -210,26 +226,56 @@ export default class OMatroskaFormat extends OFormat {
       return tag
     }
 
+    let notSupport = false
+
     formatContext.streams.forEach((stream) => {
       if (stream.codecpar.codecType === AVMediaType.AVMEDIA_TYPE_ATTACHMENT) {
         crypto.random(this.random)
-        context.attachments.entry.push({
+        const attachment: Attachment = {
           uid: this.randomView.getBigUint64(0),
-          name: stream.metadata[AVStreamMetadataKey.TITLE] || 'unknown',
-          mime: stream.metadata[AVStreamMetadataKey.MIME] || 'unknown',
+          name: stream.metadata[AVStreamMetadataKey.TITLE],
+          mime: stream.metadata[AVStreamMetadataKey.MIME],
           data: {
             data: mapUint8Array(stream.codecpar.extradata, reinterpret_cast<size>(stream.codecpar.extradataSize)),
             size: static_cast<int64>(stream.codecpar.extradataSize),
             pos: -1n
           },
-          description: stream.metadata[AVStreamMetadataKey.DESCRIPTION] || 'unknown'
+          description: stream.metadata[AVStreamMetadataKey.DESCRIPTION]
+        }
+        context.attachments.entry.push(attachment)
+        const tags = {
+          tag: [],
+          target: {
+            attachUid: attachment.uid
+          }
+        }
+        object.each(stream.metadata, (value, key) => {
+          if (key !== AVStreamMetadataKey.TITLE
+            && key !== AVStreamMetadataKey.MIME
+            && key !== AVStreamMetadataKey.DESCRIPTION
+            && key.toLocaleLowerCase() !== 'duration'
+            && is.string(value)
+          ) {
+            tags.tag.push({
+              name: key,
+              string: value
+            })
+          }
         })
+        if (tags.tag.length) {
+          context.tags.entry.push(tags)
+        }
       }
       else {
         const track: TrackEntry = {}
         crypto.random(this.random)
         track.uid = this.randomView.getBigUint64(0)
         track.codecId = codecId2Tag(stream.codecpar)
+        if (!track.codecId) {
+          notSupport = true
+          logger.error(`codecId ${stream.codecpar.codecId} not support in ${this.options.docType}`)
+          return
+        }
         track.number = stream.index + 1
         if (stream.codecpar.extradata) {
           track.codecPrivate = {
@@ -244,7 +290,26 @@ export default class OMatroskaFormat extends OFormat {
         if (stream.metadata[AVStreamMetadataKey.TITLE]) {
           track.name = stream.metadata[AVStreamMetadataKey.TITLE]
         }
-
+        const tags = {
+          tag: [],
+          target: {
+            trackUid: track.uid
+          }
+        }
+        object.each(stream.metadata, (value, key) => {
+          if (key !== AVStreamMetadataKey.TITLE
+            && key !== AVStreamMetadataKey.LANGUAGE
+            && is.string(value)
+          ) {
+            tags.tag.push({
+              name: key,
+              string: value
+            })
+          }
+        })
+        if (tags.tag.length) {
+          context.tags.entry.push(tags)
+        }
         switch (stream.codecpar.codecType) {
           case AVMediaType.AVMEDIA_TYPE_AUDIO: {
             track.type = MATROSKATrackType.AUDIO
@@ -308,6 +373,69 @@ export default class OMatroskaFormat extends OFormat {
       }
     })
 
+    formatContext.chapters.forEach((chapter) => {
+      const atom: ChapterAtom = {
+        uid: chapter.id,
+        start: chapter.start,
+        end: chapter.end,
+      }
+      if (chapter.metadata) {
+        atom.display = {}
+
+        const tags = {
+          tag: [],
+          target: {
+            chapterUid: chapter.id
+          }
+        }
+        object.each(chapter.metadata, (value, key) => {
+          if (key === AVStreamMetadataKey.TITLE) {
+            atom.display[AVStreamMetadataKey.TITLE] = chapter.metadata[AVStreamMetadataKey.TITLE]
+          }
+          else if (key === AVStreamMetadataKey.LANGUAGE) {
+            atom.display[AVStreamMetadataKey.LANGUAGE] = chapter.metadata[AVStreamMetadataKey.LANGUAGE]
+          }
+          else if (is.string(value)) {
+            tags.tag.push({
+              name: key,
+              string: value
+            })
+          }
+        })
+        if (tags.tag.length) {
+          context.tags.entry.push(tags)
+        }
+        if (!object.keys(atom.display).length) {
+          delete atom.display
+        }
+      }
+      context.chapters.entry.push({
+        atom: [atom]
+      })
+    })
+
+    const tags = {
+      tag: []
+    }
+    object.each(formatContext.metadata, (value, key) => {
+      if (is.string(value)
+        && key.toLocaleLowerCase() !== AVStreamMetadataKey.ENCODER
+        && key.toLocaleLowerCase() !== AVStreamMetadataKey.CREATION_TIME
+      ) {
+        tags.tag.push({
+          name: key,
+          string: value
+        })
+      }
+    })
+    if (tags.tag.length) {
+      context.tags.entry.push(tags)
+    }
+
+    if (notSupport) {
+      return errorType.CODEC_NOT_SUPPORT
+    }
+
     return 0
   }
 
@@ -349,7 +477,7 @@ export default class OMatroskaFormat extends OFormat {
     if ((stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_H264
         || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC
         || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
-    ) && avpacket.bitFormat !== h264.BitFormat.AVCC
+    ) && (avpacket.flags & AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB)
     ) {
       this.annexb2AvccFilter.sendAVPacket(avpacket)
       this.annexb2AvccFilter.receiveAVPacket(this.avpacket)
@@ -514,15 +642,25 @@ export default class OMatroskaFormat extends OFormat {
 
       if (!this.options.isLive && track?.duration) {
         const duration = track.duration
-        this.context.info.duration = reinterpret_cast<float>(static_cast<int32>(duration))
-        this.context.tags.entry.push({
-          tag: {
-            name: 'DURATION',
-            string: formatTimestamp(duration)
-          },
-          target: {
-            trackUid: track.uid
+        this.context.info.duration = Math.max(
+          reinterpret_cast<float>(static_cast<int32>(duration)),
+          this.context.info.duration
+        )
+        let tags = this.context.tags.entry.find((tags) => {
+          return tags.target?.trackUid === track.uid
+        })
+        if (!tags) {
+          tags = {
+            tag: [],
+            target: {
+              trackUid: track.uid
+            }
           }
+          this.context.tags.entry.push(tags)
+        }
+        tags.tag.push({
+          name: 'DURATION',
+          string: formatTimestamp(duration)
         })
       }
     })

@@ -23,24 +23,21 @@
  *
  */
 
-import AVCodecParameters from 'avutil/struct/avcodecparameters'
+import AVCodecParameters, { AVCodecParameterFlags } from 'avutil/struct/avcodecparameters'
 import AVFrame, { AVPictureType } from 'avutil/struct/avframe'
 import { WebAssemblyResource } from 'cheap/webassembly/compiler'
 import WebAssemblyRunner from 'cheap/webassembly/WebAssemblyRunner'
-import AVPacket, { AVPacketPool, AVPacketRef } from 'avutil/struct/avpacket'
+import AVPacket, { AVPacketFlags, AVPacketPool, AVPacketRef } from 'avutil/struct/avpacket'
 import { createAVPacket, destroyAVPacket, getAVPacketData, getAVPacketSideData } from 'avutil/util/avpacket'
 import * as logger from 'common/util/logger'
 import * as stack from 'cheap/stack'
 import { Rational } from 'avutil/struct/rational'
-import { BitFormat } from 'avutil/codecs/h264'
-import { videoFrame2AVFrame } from 'avutil/function/videoFrame2AVFrame'
 import { createAVFrame, destroyAVFrame, refAVFrame, unrefAVFrame } from 'avutil/util/avframe'
 import { mapUint8Array } from 'cheap/std/memory'
 import { AVCodecID, AVPacketSideDataType } from 'avutil/codec'
 import AVBSFilter from 'avformat/bsf/AVBSFilter'
 import Annexb2AvccFilter from 'avformat/bsf/h2645/Annexb2AvccFilter'
 import support from 'common/util/support'
-import isPointer from 'cheap/std/function/isPointer'
 import * as av1 from 'avutil/codecs/av1'
 import * as vp9 from 'avutil/codecs/vp9'
 import { AVDictionary } from 'avutil/struct/avdict'
@@ -57,6 +54,7 @@ export type WasmVideoEncoderOptions = {
   resource: WebAssemblyResource
   onReceiveAVPacket: (avpacket: pointer<AVPacket>) => void
   avpacketPool?: AVPacketPool
+  copyTs?: boolean
 }
 
 export default class WasmVideoEncoder {
@@ -100,7 +98,8 @@ export default class WasmVideoEncoder {
         || this.parameters.codecId === AVCodecID.AV_CODEC_ID_VVC
       ) {
         // wasm 编码器给出的是 annexb 码流
-        if (this.parameters.bitFormat === BitFormat.AVCC) {
+        this.avpacket.flags |= AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB
+        if (!(this.parameters.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB)) {
           if (!this.bitrateFilter) {
             this.bitrateFilter = new Annexb2AvccFilter()
             const timeBaseP = reinterpret_cast<pointer<Rational>>(stack.malloc(sizeof(Rational)))
@@ -119,7 +118,6 @@ export default class WasmVideoEncoder {
             this.extradata = mapUint8Array(ele.data, ele.size).slice()
           }
         }
-        this.avpacket.bitFormat = this.parameters.bitFormat
       }
       else if (this.parameters.codecId === AVCodecID.AV_CODEC_ID_AV1) {
         if (!this.extradata) {
@@ -156,7 +154,7 @@ export default class WasmVideoEncoder {
     timeBaseP.den = timeBase.den
     accessof(optsP) <- nullptr
 
-    if (parameters.codecId === AVCodecID.AV_CODEC_ID_MPEG4 && parameters.bitFormat === BitFormat.AVCC) {
+    if (parameters.codecId === AVCodecID.AV_CODEC_ID_MPEG4 && !(parameters.flags & AVCodecParameterFlags.AV_CODECPAR_FLAG_H26X_ANNEXB)) {
       this.encoder.invoke('encoder_set_flags', 1 << 22)
     }
     this.encoder.invoke('encoder_set_max_b_frame', parameters.videoDelay)
@@ -222,7 +220,11 @@ export default class WasmVideoEncoder {
       frame.pictType = AVPictureType.AV_PICTURE_TYPE_I
     }
 
-    if (frame.pts !== NOPTS_VALUE_BIGINT && frame.timeBase.den !== 0 && frame.timeBase.num !== 0) {
+    if (this.options.copyTs
+      && frame.pts !== NOPTS_VALUE_BIGINT
+      && frame.timeBase.den !== 0
+      && frame.timeBase.num !== 0
+    ) {
       frame.pts = avRescaleQ2(frame.pts, addressof(frame.timeBase), this.timeBase!)
     }
     else {

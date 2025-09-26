@@ -40,7 +40,8 @@ export interface IOLoaderVideoStreamInfo {
     width: number
     height: number
     frameRate: number
-    codecs: string
+    codec: string
+    bandwidth?: number
   }[]
   selectedIndex: number
 }
@@ -48,7 +49,8 @@ export interface IOLoaderVideoStreamInfo {
 export interface IOLoaderAudioStreamInfo {
   list: {
     lang: string
-    codecs: string
+    codec: string
+    bandwidth?: number
   }[]
   selectedIndex: number
 }
@@ -56,16 +58,58 @@ export interface IOLoaderAudioStreamInfo {
 export interface IOLoaderSubtitleStreamInfo {
   list: {
     lang: string
-    codecs: string
+    codec: string
   }[]
   selectedIndex: number
 }
 
 export type IOLoaderOptions = {
+  /**
+   * 是否是直播
+   */
   isLive?: boolean
+  /**
+   * 预加载 chunk 大小
+   */
   preload?: number
+  /**
+   * 最大重试次数
+   */
   retryCount?: number
+  /**
+   * 重试间隔
+   */
   retryInterval?: number
+  /**
+   * 音频优先 codec（dash 或 hls 选择优先 codec）
+   */
+  preferAudioCodec?: string
+  /**
+   * 视频优先 codec（dash 或 hls 选择优先 codec）
+   */
+  preferVideoCodec?: string
+  /**
+   * 字幕优先 codec（dash 或 hls 选择优先 codec）
+   */
+  preferSubtitleCodec?: string
+  /**
+   * 优先分辨率（dash 或 hls 选择优先分辨率）
+   * 
+   * 设置宽度和高度 1920*720
+   * 
+   * 设置宽度 1920
+   * 
+   * 设置高度 *720
+   */
+  preferResolution?: string
+  /**
+   * 音频优先 lang（dash 或 hls 选择优先 lang）
+   */
+  preferAudioLang?: string
+  /**
+   * 字幕优先 lang（dash 或 hls 选择优先 lang）
+   */
+  preferSubtitleLang?: string
 }
 
 const optionsDefault = {
@@ -102,7 +146,7 @@ export default abstract class IOLoader {
    * 
    * @returns 成功返回 0, 失败返回错误码（负值）
    */
-  public abstract open(info: Data, range: Range): Promise<int32>
+  public abstract open(info: Data, range?: Range): Promise<int32>
 
   /**
    * 读取数据到缓冲区

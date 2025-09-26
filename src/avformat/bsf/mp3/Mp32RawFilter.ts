@@ -47,6 +47,7 @@ export default class Mp32RawFilter extends AVBSFilter {
     dts: bigint
     buffer: Uint8Array
     extradata: Uint8Array
+    pos: int64
   }[]
 
   private cache: Uint8Array
@@ -79,6 +80,17 @@ export default class Mp32RawFilter extends AVBSFilter {
       const syncWord = (buffer[i] << 4) | ((buffer[i + 1] >> 4) & 0x0e)
 
       if (syncWord !== 0xFFE) {
+        let j = i + 1
+        for (; j < buffer.length - 1; j++) {
+          const syncWord = (buffer[j] << 4) | ((buffer[j + 1] >> 4) & 0x0e)
+          if (syncWord === 0xFFE) {
+            i = j
+            break
+          }
+        }
+        if (j < buffer.length - 1) {
+          continue
+        }
         logger.error(`found syncWord not 0xFFE, got: 0x${syncWord.toString(16)}`)
         return errorType.DATA_INVALID
       }
@@ -92,6 +104,7 @@ export default class Mp32RawFilter extends AVBSFilter {
         buffer: null,
         extradata: null,
         duration: NOPTS_VALUE,
+        pos: avpacket.pos
       }
 
       const sampleRate = mp3.getSampleRateByVersionIndex(ver, samplingFreqIndex)
@@ -143,6 +156,7 @@ export default class Mp32RawFilter extends AVBSFilter {
       addAVPacketData(avpacket, data, item.buffer.length)
 
       avpacket.dts = avpacket.pts = item.dts
+      avpacket.pos = item.pos
       avpacket.duration = static_cast<int64>(item.duration)
       avpacket.flags |= AVPacketFlags.AV_PKT_FLAG_KEY
       return 0
@@ -155,6 +169,7 @@ export default class Mp32RawFilter extends AVBSFilter {
   public reset(): number {
     this.cache = null
     this.lastDts = 0n
+    this.caches.length = 0
     return 0
   }
 }

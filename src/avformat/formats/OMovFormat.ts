@@ -27,10 +27,10 @@ import OFormat from './OFormat'
 import AVPacket, { AVPacketFlags } from 'avutil/struct/avpacket'
 import { AVOFormatContext } from '../AVFormatContext'
 
-import { MOVContext, MovFormatOptions, MOVStreamContext } from './mov/type'
+import { MOVContext, MOVStreamContext } from './mov/type'
 import createMovContext from './mov/function/createMovContext'
 import mktag from '../function/mktag'
-import { AVCodecID, AVMediaType } from 'avutil/codec'
+import { AVCodecID, AVMediaType, AVPacketSideDataType } from 'avutil/codec'
 import * as omov from './mov/omov'
 import { BoxType, SampleFlags, TKHDFlags } from './mov/boxType'
 import createMovStreamContext from './mov/function/createMovStreamContext'
@@ -40,31 +40,97 @@ import * as array from 'common/util/array'
 import * as logger from 'common/util/logger'
 import concatTypeArray from 'common/function/concatTypeArray'
 import updatePositionSize from './mov/function/updatePositionSize'
-import { AV_TIME_BASE, AV_TIME_BASE_Q, NOPTS_VALUE_BIGINT, UINT32_MAX } from 'avutil/constant'
-import { FragmentMode, MovMode } from './mov/mov'
+import { AV_MILLI_TIME_BASE_Q, AV_TIME_BASE, AV_TIME_BASE_Q, NOPTS_VALUE_BIGINT, UINT32_MAX } from 'avutil/constant'
+import { MovFragmentMode, MovMode } from './mov/mov'
 import * as object from 'common/util/object'
 import rewriteIO from '../function/rewriteIO'
 
 import arrayItemSame from '../function/arrayItemSame'
-import AVStream, { AVDisposition } from 'avutil/AVStream'
+import AVStream, { AVDisposition, AVStreamMetadataEncryption, AVStreamMetadataKey } from 'avutil/AVStream'
 import { AVFormat } from 'avutil/avformat'
 import { avQ2D, avRescaleQ, avRescaleQ2 } from 'avutil/util/rational'
-import { createAVPacket, destroyAVPacket, getAVPacketData } from 'avutil/util/avpacket'
+import { createAVPacket, destroyAVPacket, getAVPacketData, getSideData } from 'avutil/util/avpacket'
 import Annexb2AvccFilter from '../bsf/h2645/Annexb2AvccFilter'
-import { BitFormat } from 'avutil/codecs/h264'
 import * as is from 'common/util/is'
 import * as bigint from 'common/util/bigint'
 
 import * as ac3 from 'avutil/codecs/ac3'
 import { mapUint8Array } from 'cheap/std/memory'
 import getSampleDuration from './mov/function/getSampleDuration'
+import { encryptionSideData2Info } from 'avutil/util/encryption'
 
-const defaultOptions: MovFormatOptions = {
-  fragmentMode: FragmentMode.GOP,
+export {
+  MovFragmentMode,
+  MovMode
+}
+
+export interface OMovFormatOptions {
+  /**
+   * fragment 按 gop 分段还是按帧分段
+   */
+  fragmentMode?: MovFragmentMode
+  /**
+   * mp4 还是 mov
+   */
+  movMode?: MovMode
+  /**
+   * fragment 模式
+   */
+  fragment?: boolean
+  /**
+   * moov 放到文件开头
+   */
+  fastOpen?: boolean
+  /**
+   * data offset 基于 moof box(mse 使用）
+   */
+  defaultBaseIsMoof?: boolean
+  /**
+   * 忽略 editlist box 的约束
+   */
+  ignoreEditlist?: boolean
+  /**
+   * drm 加密信息
+   */
+  encryption?: AVStreamMetadataEncryption
+  /**
+   * 保留 avcc 码流中的 sps，用于封装 sps 中途更改的流
+   */
+  reverseSpsInAvcc?: boolean
+  /**
+   * 忽略 drm 数据写入
+   */
+  ignoreEncryption?: boolean
+  /**
+   * fragment 最短时长（只有音频时使用，默认 5 秒）
+   */
+  minFragmentLength?: number
+  /**
+   * fragment index 最短时长（只有音频时使用，默认 5 秒）
+   */
+  minFragmentIndexLength?: number
+  /**
+   * fragment 结束时是否追加 tfra 用于 seek
+   */
+  hasTfra?: boolean
+  /**
+   * Use mdta atom for metadata
+   */
+  useMetadataTags?: boolean
+}
+
+const defaultOptions: OMovFormatOptions = {
+  fragmentMode: MovFragmentMode.GOP,
   movMode: MovMode.MP4,
   fragment: false,
   fastOpen: false,
-  defaultBaseIsMoof: false
+  defaultBaseIsMoof: false,
+  reverseSpsInAvcc: false,
+  ignoreEncryption: false,
+  minFragmentLength: 5000,
+  minFragmentIndexLength: 5000,
+  hasTfra: true,
+  useMetadataTags: false
 }
 
 export default class OMovFormat extends OFormat {
@@ -73,12 +139,12 @@ export default class OMovFormat extends OFormat {
 
   private context: MOVContext
 
-  public options: MovFormatOptions
+  public options: OMovFormatOptions
 
   private annexb2AvccFilter: Annexb2AvccFilter
   private avpacket: pointer<AVPacket>
 
-  constructor(options: MovFormatOptions = {}) {
+  constructor(options: OMovFormatOptions = {}) {
     super()
 
     this.options = object.extend({}, defaultOptions, options)
@@ -88,18 +154,20 @@ export default class OMovFormat extends OFormat {
 
   public init(formatContext: AVOFormatContext): number {
     formatContext.ioWriter.setEndian(true)
-    const videoStream = formatContext.getStreamByMediaType(AVMediaType.AVMEDIA_TYPE_VIDEO)
-
-    if (videoStream
-      && (videoStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_H264
-        || videoStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC
-        || videoStream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
-      )
-    ) {
-      this.annexb2AvccFilter = new Annexb2AvccFilter()
-      this.annexb2AvccFilter.init(addressof(videoStream.codecpar), addressof(videoStream.timeBase))
-    }
+    formatContext.streams.forEach((stream) => {
+      if (!this.annexb2AvccFilter
+        && (stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_H264
+          || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC
+          || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
+        )
+      ) {
+        this.annexb2AvccFilter = new Annexb2AvccFilter(this.options.reverseSpsInAvcc)
+        this.annexb2AvccFilter.init(addressof(stream.codecpar), addressof(stream.timeBase))
+      }
+    })
     this.avpacket = createAVPacket()
+    this.context.metadata = formatContext.metadata
+    this.context.chapters = formatContext.chapters
 
     return 0
   }
@@ -173,6 +241,8 @@ export default class OMovFormat extends OFormat {
     this.context.minorVersion = 512
     this.context.compatibleBrand = [mktag('isom')]
     this.context.timescale = 1000
+    this.context.ignoreEncryption = this.options.ignoreEncryption
+    this.context.useMetadataTags = this.options.useMetadataTags
 
     if (this.options.fragment) {
       this.context.compatibleBrand.push(mktag('iso6'))
@@ -231,6 +301,23 @@ export default class OMovFormat extends OFormat {
         track.trackId = this.context.nextTrackId++
         streamContext.trackId = track.trackId
 
+        const encryption = this.options.encryption || stream.metadata[AVStreamMetadataKey.ENCRYPTION] as AVStreamMetadataEncryption
+        if (encryption) {
+          const cenc = this.context.cencs || {}
+          cenc[track.trackId] = {
+            schemeType: encryption.schemeType,
+            schemeVersion: encryption.schemeVersion,
+            cryptByteBlock: encryption.cryptByteBlock,
+            skipByteBlock: encryption.skipByteBlock,
+            defaultConstantIV: encryption.constantIV,
+            isProtected: 1,
+            defaultPerSampleIVSize: encryption.perSampleIVSize,
+            defaultKeyId: encryption.kid,
+            pattern: !!encryption.pattern
+          }
+          this.context.cencs = cenc
+        }
+
         track.ioWriter = new IOWriter()
         track.ioWriter.onFlush = (data) => {
           track.buffers.push(data.slice())
@@ -274,6 +361,9 @@ export default class OMovFormat extends OFormat {
         type: BoxType.MDAT,
         size: 0
       })
+    }
+    if (!formatContext.getStreamByMediaType(AVMediaType.AVMEDIA_TYPE_VIDEO)) {
+      this.context.audioOnly = true
     }
     return 0
   }
@@ -322,6 +412,7 @@ export default class OMovFormat extends OFormat {
         const streamContext = stream.privData as MOVStreamContext
 
         track.baseDataOffset = formatContext.ioWriter.getPos()
+        this.context.currentFragment.pos = formatContext.ioWriter.getPos()
 
         if (!track.sampleDurations.length) {
           if (stream.codecpar.codecType === AVMediaType.AVMEDIA_TYPE_AUDIO) {
@@ -391,6 +482,12 @@ export default class OMovFormat extends OFormat {
           track.defaultSampleDuration = track.sampleDurations[0]
           track.sampleDurations = []
         }
+        if (track.cenc) {
+          if (track.cenc.sampleSizes.length === 1 || arrayItemSame(track.cenc.sampleSizes)) {
+            track.cenc.defaultSampleInfoSize = track.cenc.sampleSizes[0]
+            track.cenc.sampleSizes = []
+          }
+        }
 
         if (stream.codecpar.codecType === AVMediaType.AVMEDIA_TYPE_AUDIO) {
           track.defaultSampleFlags = SampleFlags.DEPENDS_NO
@@ -405,6 +502,19 @@ export default class OMovFormat extends OFormat {
 
         if (track.sampleDurations.length) {
           track.defaultSampleDuration = track.sampleDurations[0]
+        }
+
+        if (this.options.hasTfra) {
+          if (!streamContext.fragIndexes.length
+            || this.options.fragmentMode === MovFragmentMode.GOP
+            || avRescaleQ(track.baseDataOffset - track.lastFragIndexDts, stream.timeBase, AV_MILLI_TIME_BASE_Q) >= this.options.minFragmentIndexLength
+          ) {
+            streamContext.fragIndexes.push({
+              pos: track.baseDataOffset,
+              time: track.baseMediaDecodeTime + static_cast<int64>(track.sampleCompositionTimeOffset[0] ?? 0)
+            })
+            track.lastFragIndexDts = streamContext.lastDts
+          }
         }
       })
 
@@ -426,6 +536,11 @@ export default class OMovFormat extends OFormat {
         mdatSize += buffer.length
         buffers.push(buffer)
         rewriteIO(formatContext.ioWriter, track.dataOffsetPos, track.dataOffset, 'int32')
+        if (track.cenc) {
+          if (track.cenc.offsetPos) {
+            rewriteIO(formatContext.ioWriter, track.cenc.offsetPos, track.cenc.offset, 'int32')
+          }
+        }
 
         track.buffers = []
         track.sampleFlags = []
@@ -434,6 +549,7 @@ export default class OMovFormat extends OFormat {
         track.sampleCompositionTimeOffset = []
         track.sampleCount = 0
         track.firstSampleFlags = 0
+        track.cenc = null
       })
 
       formatContext.ioWriter.writeUint32(mdatSize)
@@ -541,15 +657,15 @@ export default class OMovFormat extends OFormat {
 
     const streamContext = stream.privData as MOVStreamContext
 
-    const dts = avRescaleQ2(avpacket.dts, addressof(avpacket.timeBase), stream.timeBase)
-    const pts = avRescaleQ2(avpacket.pts !== NOPTS_VALUE_BIGINT ? avpacket.pts : avpacket.dts, addressof(avpacket.timeBase), stream.timeBase)
+    let dts = avRescaleQ2(avpacket.dts, addressof(avpacket.timeBase), stream.timeBase)
+    let pts = avRescaleQ2(avpacket.pts !== NOPTS_VALUE_BIGINT ? avpacket.pts : avpacket.dts, addressof(avpacket.timeBase), stream.timeBase)
     const duration = avpacket.duration !== NOPTS_VALUE_BIGINT ? avRescaleQ2(avpacket.duration, addressof(avpacket.timeBase), stream.timeBase) : -1n
 
     if ((stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_H264
       || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_HEVC
       || stream.codecpar.codecId === AVCodecID.AV_CODEC_ID_VVC
     )
-      && avpacket.bitFormat === BitFormat.ANNEXB
+      && (avpacket.flags & AVPacketFlags.AV_PKT_FLAG_H26X_ANNEXB)
     ) {
       this.annexb2AvccFilter.sendAVPacket(avpacket)
       this.annexb2AvccFilter.receiveAVPacket(this.avpacket)
@@ -569,10 +685,27 @@ export default class OMovFormat extends OFormat {
       })
 
       if (track) {
-        if (this.options.fragmentMode === FragmentMode.GOP
-          && stream.codecpar.codecType === AVMediaType.AVMEDIA_TYPE_VIDEO
-          && avpacket.flags & AVPacketFlags.AV_PKT_FLAG_KEY
-          || this.options.fragmentMode === FragmentMode.FRAME
+        if (track.tfdtDelay === NOPTS_VALUE_BIGINT) {
+          if (dts < 0) {
+            track.tfdtDelay = -dts
+          }
+          else {
+            track.tfdtDelay = 0n
+          }
+          if (pts < 0) {
+            track.trunPtsDelay = track.tfdtDelay
+          }
+        }
+        dts += track.tfdtDelay
+        pts += track.trunPtsDelay
+
+        if (this.options.fragmentMode === MovFragmentMode.GOP
+          && (stream.codecpar.codecType === AVMediaType.AVMEDIA_TYPE_VIDEO
+            && avpacket.flags & AVPacketFlags.AV_PKT_FLAG_KEY
+            || this.context.audioOnly
+              && avRescaleQ(dts - track.baseMediaDecodeTime, stream.timeBase, AV_MILLI_TIME_BASE_Q) >= this.options.minFragmentLength
+          )
+          || this.options.fragmentMode === MovFragmentMode.FRAME
         ) {
           if (this.context.currentFragment.tracks.length === 1) {
             this.updateCurrentFragment(formatContext, dts)
@@ -615,6 +748,41 @@ export default class OMovFormat extends OFormat {
           track.sampleCompositionTimeOffset.push(static_cast<double>((pts !== NOPTS_VALUE_BIGINT ? pts : dts) - dts))
 
           track.sampleFlags.push(flag)
+        }
+
+        const sideData = getSideData(
+          addressof(avpacket.sideData),
+          addressof(avpacket.sideDataElems),
+          AVPacketSideDataType.AV_PKT_DATA_ENCRYPTION_INFO
+        )
+        const cenc = this.context.cencs && this.context.cencs[streamContext.trackId]
+        if (sideData && cenc) {
+          const info = encryptionSideData2Info(mapUint8Array(sideData.data, sideData.size))
+          if (!track.cenc) {
+            track.cenc = {
+              sampleCount: 0,
+              defaultSampleInfoSize: 0,
+              sampleSizes: [],
+              offset: 0,
+              useSubsamples: false,
+              sampleInfoOffset: [],
+              sampleEncryption: []
+            }
+          }
+          if (info.subsamples.length) {
+            if (!track.cenc.useSubsamples && track.cenc.sampleSizes.length) {
+              track.cenc.sampleSizes = track.cenc.sampleSizes.map((value) => {
+                return value + 2
+              })
+            }
+            track.cenc.useSubsamples = true
+          }
+          track.cenc.sampleCount++
+          track.cenc.sampleSizes.push(cenc.defaultPerSampleIVSize + (track.cenc.useSubsamples ? (2 + info.subsamples.length * 6) : 0))
+          track.cenc.sampleEncryption.push({
+            iv: info.iv,
+            subsamples: info.subsamples
+          })
         }
 
         track.sampleCount++
@@ -832,8 +1000,13 @@ export default class OMovFormat extends OFormat {
       })
       this.updateCurrentFragment(formatContext)
 
-      formatContext.ioWriter.writeUint32(8)
-      formatContext.ioWriter.writeString(BoxType.MFRA)
+      if (this.options.hasTfra) {
+        omov.writeMfra(formatContext.ioWriter, formatContext, this.context)
+      }
+      else {
+        formatContext.ioWriter.writeUint32(8)
+        formatContext.ioWriter.writeString(BoxType.MFRA)
+      }
 
       formatContext.ioWriter.flush()
     }

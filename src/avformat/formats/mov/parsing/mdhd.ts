@@ -69,8 +69,7 @@ export default async function read(ioReader: IOReader, stream: Stream, atom: Ato
 
   const languageString = String.fromCharCode(chars[0] + 0x60, chars[1] + 0x60, chars[2] + 0x60)
 
-  stream.metadata[AVStreamMetadataKey.LANGUAGE] = language
-  stream.metadata[AVStreamMetadataKey.LANGUAGE_STRING] = languageString
+  stream.metadata[AVStreamMetadataKey.LANGUAGE] = languageString
 
   await ioReader.skip(2)
 

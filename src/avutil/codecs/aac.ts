@@ -24,7 +24,6 @@
  */
 
 import { AVSampleFormat } from '../audiosamplefmt'
-import Stream from '../AVStream'
 import { AVPacketSideDataType } from '../codec'
 import { NOPTS_VALUE } from '../constant'
 import AVCodecParameters from '../struct/avcodecparameters'
@@ -49,21 +48,30 @@ export const enum MPEG4AudioObjectTypes {
   AAC_SBR,
   AAC_SCALABLE,
 
+  AAC_LD = 23,
+
+  AAC_PS = 29,
+
   LAYER1 = 32,
   LAYER2,
   /**
    * MP3
    */
-  LAYER3
+  LAYER3,
+
+  AAC_ELD = 39
 }
 
 export const AACProfile2Name: Partial<Record<MPEG4AudioObjectTypes, string>> = {
   [MPEG4AudioObjectTypes.AAC_MAIN]: 'Main',
   [MPEG4AudioObjectTypes.AAC_LC]: 'LC',
-  [MPEG4AudioObjectTypes.AAC_SSR]: 'LC',
-  [MPEG4AudioObjectTypes.AAC_LTP]: 'LC',
+  [MPEG4AudioObjectTypes.AAC_SSR]: 'SSR',
+  [MPEG4AudioObjectTypes.AAC_LTP]: 'LTP',
   [MPEG4AudioObjectTypes.AAC_SBR]: 'HE',
-  [MPEG4AudioObjectTypes.AAC_SCALABLE]: 'HE'
+  [MPEG4AudioObjectTypes.AAC_SCALABLE]: 'SCALABLE',
+  [MPEG4AudioObjectTypes.AAC_PS]: 'HEv2',
+  [MPEG4AudioObjectTypes.AAC_LD]: 'LD',
+  [MPEG4AudioObjectTypes.AAC_ELD]: 'ELD'
 }
 
 export const MPEG4SamplingFrequencyIndex = {
@@ -148,7 +156,13 @@ export function getAVCodecParameters(extradata: Uint8ArrayInterface) {
   }
 }
 
-export function parseAVCodecParameters(stream: Stream, extradata?: Uint8ArrayInterface) {
+export function parseAVCodecParameters(
+  stream: {
+    codecpar: AVCodecParameters,
+    sideData: Partial<Record<AVPacketSideDataType, Uint8Array>>,
+  },
+  extradata?: Uint8ArrayInterface
+) {
   if (!extradata && stream.sideData[AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA]) {
     extradata = stream.sideData[AVPacketSideDataType.AV_PKT_DATA_NEW_EXTRADATA]
   }

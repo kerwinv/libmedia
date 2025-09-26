@@ -57,7 +57,7 @@ yarn add @libmedia/avplayer-ui
 
 ## 配置
 
-AVPlayer 和 AVPlayerUI 包是经过打包编译的，除了主文件还拥有一些动态模块文件。你需要配置你的构建工具将这些动态模块文件拷贝到输出目录。
+AVPlayer 和 AVPlayerUI 包是经过打包编译的，除了主文件还拥有一些动态模块文件。你需要配置你的构建工具将这些动态模块文件拷贝到输出目录。注意必须和 avplayer.js 主文件打包所在的那个 js 在同一个目录。
 
 :::code-group
 
@@ -68,12 +68,17 @@ const CopyWebpackPlugin = require('copy-webpack-plugin')
 
 module.exports = (env) => {
   return {
+    resolve: {
+      alias: {
+       '@libmedia/avplayer': path.resolve(__dirname, 'node_modules/@libmedia/avplayer/dist/umd/avplayer.js')
+      }
+    },
     plugins: [
       new CopyWebpackPlugin({
         patterns: [
           {
-            from: 'node_modules/@libmedia/avplayer/dist/esm/[0-9]*.avplayer.js',
-            to: './[name].[ext]'
+            from: 'node_modules/@libmedia/avplayer/dist/umd/[0-9]*.avplayer.js',
+            to: './[name][ext]'
           }
         ],
       })
@@ -83,24 +88,43 @@ module.exports = (env) => {
 ```
 
 ```javascript [vite]
-
 // vite 可以使用 vite-plugin-static-copy 插件
 // npm install vite-plugin-static-copy --save-dev
 import { viteStaticCopy } from 'vite-plugin-static-copy'
-export default defineConfig({
-  ...
-  plugins: [
-    viteStaticCopy({
-      targets: [
-        {
-          src: 'node_modules/@libmedia/avplayer/dist/esm/[0-9]*.avplayer.js',
-          dest: './',
-        },
-      ],
-    })
-  ],
+export default defineConfig((config) => {
+  return {
+    ...
+    plugins: [
+      viteStaticCopy({
+        targets: [
+          {
+            src: 'node_modules/@libmedia/avplayer/dist/esm/[0-9]*.avplayer.js',
+            dest: config.command === 'serve' ? './node_modules/.vite/deps/' : './assets/',
+          },
+        ],
+      })
+    ],
+  }
 });
 ```
+
+```javascript [rsbuild]
+import { defineConfig } from "@rsbuild/core"
+
+export default defineConfig({
+  output: {
+    copy: [
+      { from: './node_modules/@libmedia/avplayer/dist/umd/[0-9]*.avplayer.js', to: 'static/js/[name][ext]' },
+    ],
+  },
+  resolve: {
+    alias: {
+      '@libmedia/avplayer': './node_modules/@libmedia/avplayer/dist/umd/avplayer.js',
+    },
+  },
+})
+```
+
 :::
 
 AVPlayerUI 配置也同上。
