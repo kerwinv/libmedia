@@ -390,6 +390,7 @@
       <button onclick="resume()">resume</button>
       <button onclick="nextFrame()">下一帧</button>
       <button onclick="prevFrame()">上一帧</button>
+      <button onclick="skipFrame()">跳过下一帧</button>
     </div>
 
     <br/>
@@ -1289,13 +1290,49 @@
 
       function nextFrame() {
         if (player) {
-          player.playNextFrame()
+          player.playNextFrame().then(result => {
+            if (result) {
+              console.log('下一帧:', {
+                prevFrameTime: result.prevFrameTime.toString(),
+                pts: result.pts.toString(),
+                nextFrameTime: result.nextFrameTime.toString()
+              })
+            } else {
+              console.log('下一帧: 无法播放')
+            }
+          })
         }
       }
 
       function prevFrame() {
         if (player) {
-          player.playPrevFrame()
+          player.playPrevFrame().then(result => {
+            if (result) {
+              console.log('上一帧:', {
+                prevFrameTime: result.prevFrameTime.toString(),
+                pts: result.pts.toString(),
+                nextFrameTime: result.nextFrameTime.toString()
+              })
+            } else {
+              console.log('上一帧: 无法播放')
+            }
+          })
+        }
+      }
+
+      function skipFrame() {
+        if (player) {
+          player.skipNextFrame().then(result => {
+            if (result) {
+              console.log('跳过下一帧（不渲染）:', {
+                prevFrameTime: result.prevFrameTime.toString(),
+                pts: result.pts.toString(),
+                nextFrameTime: result.nextFrameTime.toString()
+              })
+            } else {
+              console.log('跳过下一帧: 无法执行')
+            }
+          })
         }
       }
 

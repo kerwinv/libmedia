@@ -1287,9 +1287,10 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
         }
       }
     }
-    if (minPTS < 1000n) {
+    if (minPTS < 0n) {
       return 0n
     }
+    logger.debug(`get min start pts: ${minPTS}`)
     return minPTS
   }
 
@@ -4137,7 +4138,7 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     if (!this.useMSE && this.status === AVPlayerStatus.PAUSED && this.selectedVideoStream) {
       return await this.VideoRenderThread.renderNextFrame(this.taskId)
     }
-    return false
+    return null
   }
 
   /**
@@ -4147,7 +4148,17 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     if (!this.useMSE && this.status === AVPlayerStatus.PAUSED && this.selectedVideoStream) {
       return await this.VideoRenderThread.renderPrevFrame(this.taskId)
     }
-    return false
+    return null
+  }
+
+  /**
+   * 跳过下一帧（不渲染，只更新时间状态）
+   */
+  public async skipNextFrame() {
+    if (!this.useMSE && this.status === AVPlayerStatus.PAUSED && this.selectedVideoStream) {
+      return await this.VideoRenderThread.skipNextFrame(this.taskId)
+    }
+    return null
   }
 
   /**
@@ -4331,6 +4342,13 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     this.VideoRenderThread.updateCanvas
       .transfer(canvas as OffscreenCanvas)
       .invoke(this.taskId, canvas)
+  }
+
+  public getVideoFrameRate(): number {
+    if (this.selectedVideoStream) {
+      return avQ2D(this.selectedVideoStream.codecpar.framerate)
+    }
+    return 0
   }
 
   /**

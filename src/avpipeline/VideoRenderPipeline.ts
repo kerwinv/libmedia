@@ -318,9 +318,12 @@ class CircularFrameBuffer {
   /**
 	 * 获取上一帧
 	 */
-  public async prev(): Promise<pointer<AVFrameRef> | VideoFrame | null> {
+  public async prev(needPre = false): Promise<pointer<AVFrameRef> | VideoFrame | null> {
 	  if (this.currentIndex > 0) {
       this.currentIndex--
+      if (needPre && this.currentIndex > 0) {
+        this.currentIndex--
+      }
 
       if (this.isWindows && this.frameBuffers.length > 0) {
 		  // Windows: 从 buffer 反序列化
@@ -378,6 +381,69 @@ class CircularFrameBuffer {
       }
 	  }
 	  return null
+  }
+
+  public getNextPTS(): int64 {
+    const currentIndex = this.currentIndex
+    const maxLength = this.isWindows ? this.frameBuffers.length : this.frames.length
+    if (currentIndex < 0 || currentIndex >= maxLength - 1) {
+      return -1n
+    }
+    if (this.isWindows) {
+      const data = this.frameBuffers[currentIndex + 1]
+      if (data && data.initOptions) {
+        return data.initOptions.timestamp as int64
+      }
+      else {
+        return -1n
+      }
+    }
+    else {
+      const frame = this.frames[currentIndex + 1]
+      const pts = isPointer(frame)
+        ? avRescaleQ2(
+          frame.pts,
+          addressof(frame.timeBase),
+          AV_MILLI_TIME_BASE_Q
+        )
+        : avRescaleQ(
+          static_cast<int64>(frame.timestamp as uint32),
+          AV_TIME_BASE_Q,
+          AV_MILLI_TIME_BASE_Q
+        )
+      return pts
+    }
+  }
+
+  public getPrevPTS(): int64 {
+    const currentIndex = this.currentIndex
+    if (currentIndex <= 0) {
+      return -1n
+    }
+    if (this.isWindows) {
+      const data = this.frameBuffers[currentIndex - 1]
+      if (data && data.initOptions) {
+        return data.initOptions.timestamp as int64
+      }
+      else {
+        return -1n
+      }
+    }
+    else {
+      const frame = this.frames[currentIndex - 1]
+      const pts = isPointer(frame)
+        ? avRescaleQ2(
+          frame.pts,
+          addressof(frame.timeBase),
+          AV_MILLI_TIME_BASE_Q
+        )
+        : avRescaleQ(
+          static_cast<int64>(frame.timestamp as uint32),
+          AV_TIME_BASE_Q,
+          AV_MILLI_TIME_BASE_Q
+        )
+      return pts
+    }
   }
 
   /**
@@ -1476,20 +1542,32 @@ export default class VideoRenderPipeline extends Pipeline {
  * 向前渲染一帧
  * 在暂停状态下回放到前一帧
  */
-  public async renderPrevFrame(taskId: string): Promise<boolean> {
+  public async renderPrevFrame(taskId: string) {
     const task = this.tasks.get(taskId)
     if (!task || !task.render || !task.pausing || !task.historyFrames) {
-      return false
+      return null
     }
+    let notRenderedFrame = false
+
+    if (!task.inFrameNavigation) {
+      // 将尚未渲染的帧加入历史帧缓存
+      if (task.backFrame) {
+        await task.historyFrames.push(task.backFrame)
+        notRenderedFrame = true
+      }
+    }
+
+    const nextFrameTime = task.currentPTS
+
 
     // 标记进入帧导航模式
     task.inFrameNavigation = true
 
     // 尝试获取前一帧
-    const prevFrame = await task.historyFrames.prev()
+    let prevFrame = await task.historyFrames.prev(notRenderedFrame)
     if (!prevFrame) {
       logger.info(`已经是最早的历史帧，无法向前渲染，taskId: ${task.taskId}`)
-      return false
+      return null
     }
 
     // 释放当前帧
@@ -1527,13 +1605,23 @@ export default class VideoRenderPipeline extends Pipeline {
     task.currentPTS = pts
     task.lastMasterPts = pts
 
+    let prevFrameTime = task.historyFrames?.getPrevPTS()
+    if (prevFrameTime === NOPTS_VALUE_BIGINT) {
+      prevFrameTime = task.currentPTS
+    }
+
     logger.debug(`渲染前一帧，位置: ${task.historyFrames.position()}, pts: ${pts}, taskId: ${task.taskId}`)
-    return true
+    return {
+      prevFrameTime,
+      pts,
+      nextFrameTime
+    }
   }
 
   public async renderNextFrame(taskId: string) {
     const task = this.tasks.get(taskId)
     if (task) {
+      let prevFrameTime = task.currentPTS
       // 如果在暂停状态和帧导航模式下，尝试从历史帧缓存中获取下一帧
       if (task.pausing && task.inFrameNavigation && task.historyFrames) {
         const nextFrame = await task.historyFrames.next()
@@ -1573,8 +1661,19 @@ export default class VideoRenderPipeline extends Pipeline {
           task.currentPTS = pts
           task.lastMasterPts = pts
 
+
+          let nextFrameTime = task.historyFrames?.getNextPTS()
+          if (nextFrameTime === NOPTS_VALUE_BIGINT) {
+            await this.swap(task)
+            nextFrameTime = task.stats.videoNextTime
+          }
+
           logger.debug(`从历史帧渲染下一帧，位置: ${task.historyFrames.position()}, pts: ${pts}, taskId: ${task.taskId}`)
-          return true
+          return {
+            prevFrameTime,
+            pts,
+            nextFrameTime
+          }
         }
         else {
           // 已经是最后一帧，退出帧导航模式
@@ -1600,11 +1699,103 @@ export default class VideoRenderPipeline extends Pipeline {
         task.currentPTS = pts
         task.lastMasterPts = pts
         await this.swap(task)
-        return true
+        return {
+          prevFrameTime,
+          pts,
+          nextFrameTime: task.stats.videoNextTime
+        }
       }
     }
-    return false
+    return null
   }
+
+  public async skipNextFrame(taskId: string) {
+    const task = this.tasks.get(taskId)
+    if (task) {
+      let prevFrameTime = task.currentPTS
+      // 如果在暂停状态和帧导航模式下，尝试从历史帧缓存中获取下一帧
+      if (task.pausing && task.inFrameNavigation && task.historyFrames) {
+        const nextFrame = await task.historyFrames.next()
+        if (nextFrame) {
+          // 释放当前帧
+          if (task.backFrame) {
+            if (isPointer(task.backFrame)) {
+              task.avframePool.release(task.backFrame)
+            }
+            else {
+              task.backFrame.close()
+            }
+          }
+
+          // 设置新的当前帧
+          task.backFrame = nextFrame
+
+          // 计算 PTS
+          const pts = isPointer(task.backFrame)
+            ? avRescaleQ2(
+              task.backFrame.pts,
+              addressof(task.backFrame.timeBase),
+              AV_MILLI_TIME_BASE_Q
+            )
+            : avRescaleQ(
+              static_cast<int64>(task.backFrame.timestamp as uint32),
+              AV_TIME_BASE_Q,
+              AV_MILLI_TIME_BASE_Q
+            )
+
+          // 更新状态
+          task.stats.videoCurrentTime = pts
+          task.stats.videoFrameRenderCount++
+          task.currentPTS = pts
+          task.lastMasterPts = pts
+
+
+          let nextFrameTime = task.historyFrames?.getNextPTS()
+          if (nextFrameTime === NOPTS_VALUE_BIGINT) {
+            await this.swap(task)
+            nextFrameTime = task.stats.videoNextTime
+          }
+
+          logger.debug(`从历史帧渲染下一帧，位置: ${task.historyFrames.position()}, pts: ${pts}, taskId: ${task.taskId}`)
+          return {
+            prevFrameTime,
+            pts,
+            nextFrameTime
+          }
+        }
+        else {
+          // 已经是最后一帧，退出帧导航模式
+          task.inFrameNavigation = false
+        }
+      }
+
+      if (task.backFrame) {
+        const pts = isPointer(task.backFrame)
+          ? avRescaleQ2(
+            task.backFrame.pts,
+            addressof(task.backFrame.timeBase),
+            AV_MILLI_TIME_BASE_Q
+          )
+          : avRescaleQ(
+            static_cast<int64>(task.backFrame.timestamp as uint32),
+            AV_TIME_BASE_Q,
+            AV_MILLI_TIME_BASE_Q
+          )
+        task.stats.videoCurrentTime = pts
+        task.stats.videoFrameRenderCount++
+        task.currentPTS = pts
+        task.lastMasterPts = pts
+        await this.swap(task)
+        return {
+          prevFrameTime,
+          pts,
+          nextFrameTime: task.stats.videoNextTime
+        }
+      }
+    }
+    return null
+  }
+
 
   public async registerTask(options: VideoRenderTaskOptions): Promise<number> {
     if (this.tasks.has(options.taskId)) {
