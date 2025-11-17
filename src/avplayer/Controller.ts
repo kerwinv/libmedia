@@ -34,6 +34,8 @@ export interface ControllerObserver {
   onCanvasUpdated: () => void
   onFirstVideoRendered: () => void
   onFirstVideoRenderedAfterUpdateCanvas: () => void
+  onFirstVideoPTS?: (pts: int64) => void
+  onFirstAudioPTS?: (pts: int64) => void
   onTimeUpdate: (pts: int64) => void
   onMSESeek: (time: number) => void
   onGetDecoderResource: (mediaType: AVMediaType, codecId: AVCodecID) => Promise<WebAssemblyResource | string | ArrayBuffer>
@@ -87,6 +89,9 @@ export default class Controller {
         case 'firstRenderedAfterUpdateCanvas':
           this.observer.onFirstVideoRenderedAfterUpdateCanvas()
           break
+        case 'firstVideoPTS':
+          this.observer.onFirstVideoPTS?.(request.params.pts)
+          break
         case 'syncPts':
           if (this.timeUpdateListenType === AVMediaType.AVMEDIA_TYPE_VIDEO) {
             this.observer.onTimeUpdate(request.params.pts)
@@ -104,6 +109,9 @@ export default class Controller {
           if (this.timeUpdateListenType === AVMediaType.AVMEDIA_TYPE_AUDIO) {
             this.observer.onTimeUpdate(request.params.pts)
           }
+          break
+        case 'firstAudioPTS':
+          this.observer.onFirstAudioPTS?.(request.params.pts)
           break
         case 'ended':
           this.observer.onAudioEnded()

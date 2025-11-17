@@ -765,6 +765,9 @@
             mediaStreamModeVideo.srcObject = container
             document.querySelector(id).appendChild(mediaStreamModeVideo)
           }
+          player.on('firstVideoPTS', (pts) => {
+            console.log('first video pts', pts)
+          })
           player.on('ended', () => {
             if (statsTimer) {
               clearTimeout(statsTimer)
@@ -1070,6 +1073,7 @@
                 video: true,
                 subtitle: true
               }).then(() => {
+                player.pause()
                 if (mediaStreamModeVideo) {
                   mediaStreamModeVideo.play()
                 }

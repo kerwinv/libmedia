@@ -870,6 +870,9 @@ export default class VideoRenderPipeline extends Pipeline {
           AV_MILLI_TIME_BASE_Q
         )
 
+      // 通知首帧 PTS
+      task.controlIPCPort.notify('firstVideoPTS', { pts: task.currentPTS })
+
       logger.debug(`got first video frame, pts: ${!isPointer(task.backFrame)
         ? static_cast<int64>(task.backFrame.timestamp as uint32)
         : task.backFrame.pts

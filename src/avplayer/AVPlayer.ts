@@ -616,6 +616,8 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
   private drmSystemKey: DRMType
   private drmSession: MediaKeySession
   private stopPending: Promise<void>
+  private firstVideoPTS: int64
+  private firstAudioPTS: int64
 
   private statsController: StatsController
   private jitterBufferController: JitterBufferController
@@ -650,6 +652,8 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     this.flipHorizontal = false
     this.flipVertical = false
     this.seekedTimestamp = NOPTS_VALUE_BIGINT
+    this.firstVideoPTS = NOPTS_VALUE_BIGINT
+    this.firstAudioPTS = NOPTS_VALUE_BIGINT
     this.isLive_ = !!options.isLive
 
     this.GlobalData = make<AVPlayerGlobalData>()
@@ -1290,7 +1294,6 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     if (minPTS < 0n) {
       return 0n
     }
-    logger.debug(`get min start pts: ${minPTS}`)
     return minPTS
   }
 
@@ -3274,6 +3277,8 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     this.subTaskId = ''
     this.subtitleTaskId = ''
     this.seekedTimestamp = NOPTS_VALUE_BIGINT
+    this.firstVideoPTS = NOPTS_VALUE_BIGINT
+    this.firstAudioPTS = NOPTS_VALUE_BIGINT
 
     this.statsController.stop()
     if (this.jitterBufferController) {
@@ -4249,6 +4254,24 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
   }
 
   /**
+   * 获取首个视频帧的 PTS ( 毫秒）
+   * 
+   * @returns 首个视频帧的 PTS, 如果还未获取到则返回 NOPTS_VALUE_BIGINT
+   */
+  public getFirstVideoPTS(): int64 {
+    return this.firstVideoPTS
+  }
+
+  /**
+   * 获取首个音频帧的 PTS ( 毫秒）
+   * 
+   * @returns 首个音频帧的 PTS, 如果还未获取到则返回 NOPTS_VALUE_BIGINT
+   */
+  public getFirstAudioPTS(): int64 {
+    return this.firstAudioPTS
+  }
+
+  /**
    * 销毁播放器
    * 
    * @returns 
@@ -4372,6 +4395,28 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
   public onFirstAudioRendered(): void {
     logger.info(`first audio frame rendered, taskId: ${this.taskId}`)
     this.fire(eventType.FIRST_AUDIO_RENDERED)
+  }
+
+  /**
+   * @hidden
+   */
+  public onFirstVideoPTS(pts: int64): void {
+    if (this.firstVideoPTS === NOPTS_VALUE_BIGINT) {
+      this.firstVideoPTS = pts
+      logger.info(`received first video PTS: ${pts}, taskId: ${this.taskId}`)
+      this.fire(eventType.FIRST_VIDEO_PTS, [pts])
+    }
+  }
+
+  /**
+   * @hidden
+   */
+  public onFirstAudioPTS(pts: int64): void {
+    if (this.firstAudioPTS === NOPTS_VALUE_BIGINT) {
+      this.firstAudioPTS = pts
+      logger.info(`received first audio PTS: ${pts}, taskId: ${this.taskId}`)
+      this.fire(eventType.FIRST_AUDIO_PTS, [pts])
+    }
   }
 
   /**

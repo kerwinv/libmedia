@@ -59,6 +59,10 @@ export const FIRST_AUDIO_RENDERED = 'firstAudioRendered'
 
 export const FIRST_VIDEO_RENDERED = 'firstVideoRendered'
 
+export const FIRST_VIDEO_PTS = 'firstVideoPTS'
+
+export const FIRST_AUDIO_PTS = 'firstAudioPTS'
+
 export const STREAM_UPDATE = 'streamUpdate'
 
 export const PROGRESS = 'progress'

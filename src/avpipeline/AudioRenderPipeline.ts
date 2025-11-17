@@ -238,6 +238,8 @@ export default class AudioRenderPipeline extends Pipeline {
             AV_MILLI_TIME_BASE_Q
           )
           task.firstPlayed = true
+          // 通知首帧 PTS
+          task.controlIPCPort.notify('firstAudioPTS', { pts: start })
           logger.debug(`got first audio frame, pts: ${audioFrame.pts}(${start}ms), taskId: ${task.taskId}`)
         }
 
