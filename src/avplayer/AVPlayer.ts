@@ -678,6 +678,30 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     logger.info(`create player, taskId: ${this.taskId}`)
   }
 
+  selectBestSampleMode(info: {vh: number, vw: number, boxH: number, boxW: number}) {
+    const { vh, vw, boxH, boxW } = info
+    const devicePixelRatio = window.devicePixelRatio || 1
+    const screenW = screen.width * devicePixelRatio
+    const screenH = screen.height * devicePixelRatio
+    const renderW = vw * devicePixelRatio
+    const renderH = vw * devicePixelRatio
+    const isUseGpuMode = !!localStorage.getItem('libmedia_prefer_gpu_sampling')
+    const getHardwarePreference = async () => {
+      const isWindows = os.windows
+      const hardwareCore = navigator.hardwareConcurrency || 4
+      if (isWindows) {
+        // windows 平台下判断是否是集成显卡
+        if (hardwareCore <= 8 || isUseGpuMode) {
+          return true
+        }
+      }
+      return false
+    }
+    if (vw >= 3840 && getHardwarePreference()) {
+      this.options.samplingMode = 'gpu'
+    }
+  }
+
   /**
    * 当前播放时间戳（毫秒）
    */
@@ -879,6 +903,13 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     const boxW = Math.max(1, container.clientWidth)
     const boxH = Math.max(1, container.clientHeight)
 
+    this.selectBestSampleMode({
+      vh,
+      vw,
+      boxW,
+      boxH
+    })
+
     if (this.options.samplingMode === 'css') {
       // 计算等比尺寸（FIT=contain, FILL=cover），并通过相对定位数值居中
       const scale = this.renderMode === RenderMode.FILL
@@ -888,6 +919,11 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
       const cssH = Math.max(1, Math.round(vh * scale))
       const left = Math.round((boxW - cssW) / 2)
       const top = Math.round((boxH - cssH) / 2)
+      let devicePixelRatio = window.devicePixelRatio || 1
+
+      if (vw >= 3840 && devicePixelRatio > 2) {
+        devicePixelRatio = 2
+      }
 
       // 内部像素 = 视频分辨率，不乘 DPR
       canvas.style.cssText = `
@@ -899,7 +935,7 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
         top: ${top}px;
         margin: 0;
       `
-      return { viewportWidth: vw, viewportHeight: vh, devicePixelRatio: window.devicePixelRatio }
+      return { viewportWidth: vw, viewportHeight: vh, devicePixelRatio }
     }
     else {
       // GPU 一次采样：CSS 填满容器，内部像素 = 容器 CSS×DPR
