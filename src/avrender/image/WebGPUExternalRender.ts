@@ -134,7 +134,8 @@ export default class WebGPUExternalRender extends WebGPURender {
     renderPass.setPipeline(this.renderPipeline)
     renderPass.setBindGroup(0, bindGroup)
     renderPass.setVertexBuffer(0, this.vbo)
-    renderPass.draw(4, 4, 0, 0)
+    // 全屏四边形只需绘制 1 个实例，shader 未使用 instance_index，多实例只会重复覆盖同一像素
+    renderPass.draw(4, 1, 0, 0)
     renderPass.end()
     this.device.queue.submit([commandEncoder.finish()])
   }
