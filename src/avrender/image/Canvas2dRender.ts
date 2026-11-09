@@ -89,13 +89,17 @@ export default class CanvasImageRender extends ImageRender {
   }
 
   private checkFrame(frame: VideoFrame) {
-    if (frame.codedWidth !== this.textureWidth
-      || frame.codedHeight !== this.videoHeight
-      || frame.codedWidth !== this.videoWidth
+    // codedWidth/codedHeight 可能包含解码器对齐填充（如 2160 -> 2176）
+    // drawImage 绘制的是 visibleRect，布局也需按 visibleRect 计算
+    const width = frame.visibleRect?.width || frame.codedWidth
+    const height = frame.visibleRect?.height || frame.codedHeight
+    if (width !== this.textureWidth
+      || height !== this.videoHeight
+      || width !== this.videoWidth
     ) {
-      this.videoWidth = frame.codedWidth
-      this.videoHeight = frame.codedHeight
-      this.textureWidth = frame.codedWidth
+      this.videoWidth = width
+      this.videoHeight = height
+      this.textureWidth = width
       this.layout()
     }
   }
