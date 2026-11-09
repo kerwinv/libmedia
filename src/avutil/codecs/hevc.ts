@@ -890,25 +890,21 @@ export function parseSPS(sps: Uint8ArrayInterface): HevcSPS {
     bit_depth_chroma_minus8 = expgolomb.readUE(bitReader)
 
 
+    // H.265 Table 6-1: SubWidthC / SubHeightC
     let SubWidthC = 2
     let SubHeightC = 2
 
-    if (chroma_format_idc === 0) {
-      SubWidthC = SubHeightC = 0
+    if (chroma_format_idc === 0 || chroma_format_idc === 3) {
+      SubWidthC = SubHeightC = 1
     }
     else if (chroma_format_idc === 2) {
       SubWidthC = 2
       SubHeightC = 1
     }
-    else if (chroma_format_idc === 3) {
-      SubWidthC = SubHeightC = 1
-    }
 
-    const cropUnitX = SubWidthC * (1 << (bit_depth_luma_minus8 + 1))
-    const cropUnitY = SubHeightC * (1 << (bit_depth_luma_minus8 + 1))
-
-    width -= cropUnitX * (confWinLeftOffset + confWinRightOffset)
-    height -= cropUnitY * (confWinTopOffset + confWinBottomOffset)
+    // H.265 7.4.3.2: conformance window 裁剪单位即 SubWidthC / SubHeightC，与位深无关
+    width -= SubWidthC * (confWinLeftOffset + confWinRightOffset)
+    height -= SubHeightC * (confWinTopOffset + confWinBottomOffset)
   }
 
   const log2_max_poc_lsb = expgolomb.readUE(bitReader) + 4
