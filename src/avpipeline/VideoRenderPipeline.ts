@@ -184,6 +184,9 @@ class CircularFrameBuffer {
   private enableCapture: boolean = true
   private inFrameNavigation: boolean = false
   private isWindows: boolean = os.windows
+  // Windows 下 push 是异步的：pendingPush 串行化写入，读取前等待；generation 在 clear 时递增，用于丢弃过期写入
+  private pendingPush: Promise<void> = Promise.resolve()
+  private generation: number = 0
 
   constructor(capacity: number, framePool: AVFramePoolImpl) {
 	  this.capacity = capacity
@@ -272,29 +275,46 @@ class CircularFrameBuffer {
 
 	  if (this.isWindows && !isPointer(frame)) {
       // Windows: 存储序列化的 buffer
-      const data = await this.serializeVideoFrame(frame as VideoFrame)
-      if (!data) {
-        return
-      }
+      // 调用方（swap）不会等待 push 完成并会立即 close 原帧，因此必须在这里同步发起 createImageBitmap；
+      // 写入则按调用顺序串行，并在 clear（如 seek）之后丢弃过期的结果
+      const generation = this.generation
+      const serialized = this.serializeVideoFrame(frame as VideoFrame)
 
-      // 管理容量
-      if (this.frameBuffers.length >= this.capacity) {
-        // 移除最旧的 buffer
-        const data = this.frameBuffers.shift()
-        if (data) {
-          // 释放序列化的 VideoFrame
+      this.pendingPush = this.pendingPush.then(async () => {
+        const data = await serialized
+        if (!data) {
+          return
+        }
+        if (generation !== this.generation) {
           if (data.bitmap instanceof ImageBitmap) {
             data.bitmap.close()
           }
+          return
         }
-        // 调整当前索引
-        if (this.currentIndex > 0) {
-          this.currentIndex--
-        }
-      }
 
-      this.frameBuffers.push(data)
-      this.currentIndex = this.frameBuffers.length - 1
+        // 管理容量
+        if (this.frameBuffers.length >= this.capacity) {
+          // 移除最旧的 buffer
+          const old = this.frameBuffers.shift()
+          if (old) {
+            // 释放序列化的 VideoFrame
+            if (old.bitmap instanceof ImageBitmap) {
+              old.bitmap.close()
+            }
+          }
+          // 调整当前索引
+          if (this.currentIndex > 0) {
+            this.currentIndex--
+          }
+        }
+
+        this.frameBuffers.push(data)
+        this.currentIndex = this.frameBuffers.length - 1
+      }).catch((error) => {
+        // 单次写入失败不能让后续 push / 读取全部失败
+        logger.warn(`写入历史帧失败: ${error?.message}`)
+      })
+      await this.pendingPush
 	  }
     else {
       // Mac 或 AVFrameRef: 直接存储帧的副本
@@ -319,6 +339,7 @@ class CircularFrameBuffer {
 	 * 获取上一帧
 	 */
   public async prev(needPre = false): Promise<pointer<AVFrameRef> | VideoFrame | null> {
+	  await this.pendingPush
 	  if (this.currentIndex > 0) {
       this.currentIndex--
       if (needPre && this.currentIndex > 0) {
@@ -343,6 +364,7 @@ class CircularFrameBuffer {
 	 * 获取下一帧
 	 */
   public async next(): Promise<pointer<AVFrameRef> | VideoFrame | null> {
+	  await this.pendingPush
 	  const maxLength = this.isWindows ? this.frameBuffers.length : this.frames.length
 
 	  if (this.currentIndex < maxLength - 1) {
@@ -366,6 +388,7 @@ class CircularFrameBuffer {
 	 * 获取当前帧
 	 */
   public async current(): Promise<pointer<AVFrameRef> | VideoFrame | null> {
+	  await this.pendingPush
 	  const maxLength = this.isWindows ? this.frameBuffers.length : this.frames.length
 
 	  if (this.currentIndex >= 0 && this.currentIndex < maxLength) {
@@ -462,6 +485,8 @@ class CircularFrameBuffer {
 	 * 清空缓冲区
 	 */
   public clear(): void {
+	  // 使 clear 之前发起、尚未写入的 push 失效
+	  this.generation++
 	  if (this.isWindows) {
       // Windows: 清空 buffer 数组
       this.frameBuffers.forEach((data) => {
@@ -1329,8 +1354,32 @@ export default class VideoRenderPipeline extends Pipeline {
     if (task) {
       if (task.render) {
         task.render.viewport(width, height)
-        nextTick(() => {
-          if (task.pausing && task.backFrame && task.render) {
+        nextTick(async () => {
+          if (!task.pausing || !task.render) {
+            return
+          }
+          // 播放结束且未开启 keepLastFrame 时画面已被清空，不应因 resize 重新出现
+          if (task.ended && !task.backFrame && !task.keepLastFrame) {
+            return
+          }
+          // 渲染后 swap 会把 backFrame 换成下一帧（尚未显示），暂停时重绘 backFrame 会让画面前进一帧；
+          // 非帧导航状态下，历史帧当前位置就是正在显示的帧，优先重绘它
+          if (!task.inFrameNavigation && task.historyFrames) {
+            const frame = await task.historyFrames.current()
+            if (frame) {
+              if (task.render) {
+                task.render.render(frame)
+              }
+              if (isPointer(frame)) {
+                task.avframePool.release(frame)
+              }
+              else {
+                frame.close()
+              }
+              return
+            }
+          }
+          if (task.backFrame) {
             task.render.render(task.backFrame)
           }
         })
