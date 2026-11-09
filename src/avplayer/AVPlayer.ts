@@ -686,7 +686,7 @@ export default class AVPlayer extends Emitter implements ControllerObserver {
     const renderW = vw * devicePixelRatio
     const renderH = vw * devicePixelRatio
     const isUseGpuMode = !!localStorage.getItem('libmedia_prefer_gpu_sampling')
-    const getHardwarePreference = async () => {
+    const getHardwarePreference = () => {
       const isWindows = os.windows
       const hardwareCore = navigator.hardwareConcurrency || 4
       if (isWindows) {
