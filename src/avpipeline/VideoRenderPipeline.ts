@@ -392,7 +392,13 @@ class CircularFrameBuffer {
     if (this.isWindows) {
       const data = this.frameBuffers[currentIndex + 1]
       if (data && data.initOptions) {
-        return data.initOptions.timestamp as int64
+        // initOptions.timestamp 是 VideoFrame 的 timestamp（number，微秒），
+        // 需与非 Windows 分支一致转换为 int64 毫秒
+        return avRescaleQ(
+          static_cast<int64>(data.initOptions.timestamp as uint32),
+          AV_TIME_BASE_Q,
+          AV_MILLI_TIME_BASE_Q
+        )
       }
       else {
         return -1n
@@ -423,7 +429,13 @@ class CircularFrameBuffer {
     if (this.isWindows) {
       const data = this.frameBuffers[currentIndex - 1]
       if (data && data.initOptions) {
-        return data.initOptions.timestamp as int64
+        // initOptions.timestamp 是 VideoFrame 的 timestamp（number，微秒），
+        // 需与非 Windows 分支一致转换为 int64 毫秒
+        return avRescaleQ(
+          static_cast<int64>(data.initOptions.timestamp as uint32),
+          AV_TIME_BASE_Q,
+          AV_MILLI_TIME_BASE_Q
+        )
       }
       else {
         return -1n
